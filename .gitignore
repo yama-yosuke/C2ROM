@@ -1,0 +1,14 @@
+__pycache__/*
+*/__pycache__/*
+*results*/*
+.ipynb_checkpoints/*
+*.sh
+wandb/*
+dataset/*
+train_job.sh.*
+*ipynb
+job/*
+*.log
+*.json
+*.o*
+v10.6/*
