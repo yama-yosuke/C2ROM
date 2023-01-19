@@ -104,7 +104,7 @@ class Env(object):
 
             dynamic["next_agent"] (Tensor): next agent, shape=[calcB, 1]
             dynamic["position"] (Tensor): position(node index) of agent, shape=[calcB, n_agents]
-            dynamic["time_to_arrival"] (Tensor): time to arrival, shape=[calcB, n_agents]
+            dynamic["remaining_time"] (Tensor): remainingtime, shape=[calcB, n_agents]
             dynamic["load"] (Tensor): load(normalized), shape=[calcB, n_agents]
             dynamic["demand] (Tensor): current demand, shape=[calcB, n_nodes]
             dynamic["current_time"] (Tensor): current time(init=0), shape=[calcB, 1]
@@ -125,7 +125,7 @@ class Env(object):
         # dynamic
         self.next_agent = torch.full((self.calc_batch_size, 1), agent_id, dtype=int, device=self.device)
         self.position = torch.full((self.calc_batch_size, self.n_agents), 0, dtype=int, device=self.device)  # init position is depot
-        self.time_to_arrival = torch.zeros(self.calc_batch_size, self.n_agents, device=self.device)
+        self.remaining_time = torch.zeros(self.calc_batch_size, self.n_agents, device=self.device)
         self.load = self.max_load.clone()
         self.demand = self.init_demand.clone()
         self.current_time = torch.zeros(self.calc_batch_size, 1, device=self.device)
@@ -148,7 +148,7 @@ class Env(object):
         dynamic = {
             "next_agent": self.next_agent.clone(),
             "position": self.position.clone(),
-            "time_to_arrival": self.time_to_arrival.clone(),
+            "remaining_time": self.remaining_time.clone(),
             "load": self.load.clone(),
             "demand": self.demand.clone(),
             "current_time": self.current_time.clone(),
@@ -172,7 +172,7 @@ class Env(object):
         Returns:
             dynamic["next_agent"] : [B, 1], next agent
             dynamic["position"] : [B, n_agents], position of agent
-            dynamic["time_to_arrival"] : [B, n_agents], time to arrival
+            dynamic["remaining_time"] : [B, n_agents], remainingtime
             dynamic["load"] : [B, n_agents], load(normalized, 初期値はstaticのmax loadと同じ)
             dynamic["demand]: [B, n_nodes], current demand(normalized, , 初期値はstaticのinit demandと同じ)
             dynamic["current_time"] : [B, 1], current time(init=0)
@@ -204,14 +204,14 @@ class Env(object):
         additional_time = additional_distance / agent_speed   # save a_d for reward
         additional_time[additional_distance == 0] = float("inf")
 
-        self.time_to_arrival[agent_mask] = additional_time.squeeze(1)  # [B, n_agents] holding time to arrival
+        self.remaining_time[agent_mask] = additional_time.squeeze(1)  # [B, n_agents] holding remainingtime
         self.position[agent_mask] = action.squeeze(1)  # [B, n_agents] holding fiexed future position
 
         additional_distance_oh = torch.zeros(self.calc_batch_size, self.n_agents, device=self.device)  # [B, n_agents], agentごとの移動量
         additional_distance_oh[agent_mask] = additional_distance.squeeze()
 
         # [B, 1], 全ビークルがwait_time = infなら、エピソード終了
-        self.done = self.time_to_arrival.isinf().all(dim=1, keepdim=True)
+        self.done = self.remaining_time.isinf().all(dim=1, keepdim=True)
 
         # =======================PHASE2=======================
         # FILL DEMAND(update vehicle load and node demand)
@@ -236,19 +236,19 @@ class Env(object):
         # TIME STEP(update time_to_arrival based on next agent)
         # UPDATE NEXT_AGENT
         # [B, 1] holding index of next acting agent
-        self.next_agent = self.time_to_arrival.argmin(1).unsqueeze(1)
+        self.next_agent = self.remaining_time.argmin(1).unsqueeze(1)
 
         # INITIALIZE SECOND AGENT BOOLEAN MASK
         # [B, n_agents] holding True if agent is next acting agent of the batch
         agent_mask = torch.arange(self.n_agents, device=self.device).expand(self.calc_batch_size, -1).eq(self.next_agent)
 
         # DETERMINE ELAPSED TIME UNTIL NEXT AGENT ACTION
-        # [B, 1] holding the shortest time to arrival
-        elapsed_time = self.time_to_arrival[agent_mask].unsqueeze(1)
+        # [B, 1] holding the shortest remainingtime
+        elapsed_time = self.remaining_time[agent_mask].unsqueeze(1)
         elapsed_time[elapsed_time == float("inf")] = 0  # 終了済みエピソード(全部INF)は時間を固定
 
         # TIME STEP
-        self.time_to_arrival -= elapsed_time  # [B, n_agents] holding total elapsed time of vehicle
+        self.remaining_time -= elapsed_time  # [B, n_agents] holding total elapsed time of vehicle
         self.current_time += elapsed_time  # [B, 1] holding total elapsed time of the episode
 
         # UPDATE MASK
@@ -256,13 +256,13 @@ class Env(object):
 
         # infをモデルに流すとバグる
         # → agentのobservationとしては、帰還済みビークルを-1で表現
-        time_to_arrival_obs = self.time_to_arrival.clone()
+        time_to_arrival_obs = self.remaining_time.clone()
         time_to_arrival_obs[time_to_arrival_obs == float("inf")] = -1
 
         dynamic = {
             "next_agent": self.next_agent.clone(),
             "position": self.position.clone(),
-            "time_to_arrival": time_to_arrival_obs.clone(),
+            "remaining_time": time_to_arrival_obs.clone(),
             "load": self.load.clone(),
             "demand": self.demand.clone(),
             "current_time": self.current_time.clone(),
@@ -315,7 +315,7 @@ class Env(object):
         # 5. 残り一台&&DEPOTにいる&&demandが残っている →　depot to depotはmask
         # →　残り一台&&DEPOTにいる&&demandが残っていない　→　depot to depotを選択し、次のループで終了
         # [B], time_to_arrivalのnot INFの要素数が1つならTrue
-        is_last = (torch.count_nonzero(~self.time_to_arrival.isinf(), 1) == 1)
+        is_last = (torch.count_nonzero(~self.remaining_time.isinf(), 1) == 1)
         # [B], depotにいるならTrue
         at_depot = self.position[agent_mask].eq(0)
         # [B], demandが残っている場合True
@@ -330,57 +330,3 @@ class Env(object):
         mask[self.done.squeeze(), 1:] = 0
         """
         return mask
-
-    def sim_step(self, agent_id, action):
-        """
-        agent_idがactionをとった後のagent stateとnode stateを返す。
-        simulationは、実際のactionをとる時間を起点に考えるので、時間はfix
-
-        Args:
-            agent_id: [B, 1]
-            action: [B, 1]: all non-negative indices
-        Returns:
-            dynamic["next_agent"] : [B, 1], next agent = agent_id
-            dynamic["position"] : [B, n_agents], position of agent
-            dynamic["time_to_arrival"] : [B, n_agents], time to arrival, fixed
-            dynamic["load"] : [B, n_agents], load(normalized, 初期値はstaticのmax loadと同じ)
-            dynamic["demand]: [B, n_nodes], current demand(normalized, , 初期値はstaticのinit demandと同じ)
-
-            mask: [B, n_nodes]
-        """
-        # [B, n_agents] holding True if agent is current acting agent of the batch
-        agent_mask = torch.arange(self.n_agents, device=self.device).expand(self.batch_size, -1).eq(agent_id)
-        self.position[agent_mask] = action.squeeze(1)  # [B, n_agents] holding fiexed future position
-
-        # FILL DEMAND(update vehicle load and node demand)
-        # [B, n_agents] holding True if acting agent of episode is at a depot
-        # position of greater than equal to n_custs means depot
-        at_depot = action.eq(0).expand_as(agent_mask)
-        # [B, n_nodes] holding True if the node is being visited
-        at_node = torch.arange(self.n_nodes, device=self.device).expand(self.batch_size, -1).eq(action)
-
-        # Update load & demand
-        # [B] (split delivery不可の場合は、deltaは常にdemandと等しい)
-        # depotのdemandは0なので、delta=0で影響しない。
-        delta = torch.min(torch.stack([self.demand[at_node], self.load[agent_mask]], dim=1), dim=1).values.squeeze()
-        self.demand[at_node] -= delta
-        self.load[agent_mask] -= delta
-        # depotでは充填される
-        self.load[agent_mask * at_depot] = self.max_load[agent_mask * at_depot].clone()
-
-        # UPDATE MASK
-        mask = self.make_mask(agent_mask)
-
-        # time_to_arrivalは更新しない(実際のactionをとった時点を起点にsimulationを行うので)
-        time_to_arrival_obs = self.time_to_arrival.clone()
-        time_to_arrival_obs[time_to_arrival_obs == float("inf")] = -1
-
-        dynamic = {
-            "next_agent": agent_id,
-            "position": self.position.clone(),
-            "time_to_arrival": time_to_arrival_obs.clone(),
-            "load": self.load.clone(),
-            "demand": self.demand.clone(),
-        }
-
-        return dynamic, mask
