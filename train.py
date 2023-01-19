@@ -4,13 +4,11 @@ import datetime
 import copy
 import pprint as pp
 import logging
-import traceback
 
 import json
 from tqdm import tqdm
-from models.models import *
+from models.models import PolicyNetwork
 from env import Env
-from env_alt import AltEnv
 from utils import Logger
 import time
 import torch
@@ -34,25 +32,6 @@ def setup(rank, world_size, args):
 
 def cleanup():
     dist.destroy_process_group()
-
-
-def setup_logger(args):
-    # make directories
-    program_dir = os.path.dirname(os.path.abspath(__file__))
-    start_time = datetime.datetime.now()
-    model_name = args.actor_type
-    if args.veh_sel == "alt":
-        model_name += "-ALT"
-    save_dir = os.path.join(program_dir, 'results', args.title, "{}-{}".format(model_name, start_time.strftime('%Y-%m-%d-%H-%M-%S')))
-    img_dir = os.path.join(save_dir, "imgs")
-    cp_dir = os.path.join(save_dir, "checkpoints")
-    os.makedirs(img_dir)
-    os.makedirs(cp_dir)
-    # record args
-    with open(os.path.join(cp_dir, "args.json"), 'w') as f:
-        json.dump(vars(args), f, indent=True)
-    logger = Logger(args, start_time, save_dir, img_dir)
-    return logger, cp_dir
 
 
 def sample_actor(args, env, actor, n_agents, speed, max_load, test, out_tour=False, sampling=False, rep=1, calc_time=False):
@@ -107,32 +86,8 @@ def load_checkpoint(rank, device, args):
 
 
 def set_actor(rank, device, parallel, args, checkpoint):
-    actor_class = {
-        "MHAv8.1": ActorMHAv81,
-        "MHAv8.6": ActorMHAv86,
-        "MHAv8.7": ActorMHAv87,
-        "MHAv9.1": ActorMHAv91,
-        "MHAv9.2": ActorMHAv92,
-        "MHAv10.1": ActorMHAv101,
-        "MHAv10.2": ActorMHAv102,
-        "MHAv10.3": ActorMHAv103,
-        "MHAv10.4": ActorMHAv104,
-        "MHAv10.4mini": ActorMHAv104mini,
-        "MHAv10.5": ActorMHAv105,
-        "MHAv10.6": ActorMHAv106,
-        "MHAv10.6_no_coop": ActorMHAv106_no_coop,
-        "MHAv10.7mini": ActorMHAv107mini,
-        "MHAv11.1": ActorMHAv111,
-    }.get(args.actor_type)
-    if "9" in args.actor_type:
-        actor = actor_class(dim_embed=args.dim_embed, n_heads=args.n_heads, n_layers_n=args.n_layers_n, n_layers_a=args.n_layers_a, norm_n=args.norm_n, norm_a=args.norm_a,
-                            tanh_clipping=args.tanh_clipping, dropout=args.dropout, target=args.target, device=device, n_foresight=args.n_foresight).to(device)
-    if "10" in args.actor_type or "11" in args.actor_type:
-        actor = actor_class(dim_embed=args.dim_embed, n_heads=args.n_heads, n_layers_n=args.n_layers_n, n_layers_a=args.n_layers_a, norm_n=args.norm_n, norm_a=args.norm_a,
+    actor = PolicyNetwork(dim_embed=args.dim_embed, n_heads=args.n_heads, n_layers_n=args.n_layers_n, n_layers_a=args.n_layers_a, norm_n=args.norm_n, norm_a=args.norm_a,
                             tanh_clipping=args.tanh_clipping, dropout=args.dropout, target=args.target, device=device, n_agents=args.n_agents).to(device)
-    else:
-        actor = actor_class(dim_embed=args.dim_embed, n_heads=args.n_heads, n_layers_n=args.n_layers_n, n_layers_a=args.n_layers_a,
-                            norm_n=args.norm_n, norm_a=args.norm_a, tanh_clipping=args.tanh_clipping, dropout=args.dropout, target=args.target, device=device).to(device)
     if checkpoint:
         print('Loading actor checkpoint...\n')
         actor.load_state_dict(checkpoint["actor"])
@@ -142,25 +97,19 @@ def set_actor(rank, device, parallel, args, checkpoint):
     lr_scheduler = optim.lr_scheduler.LambdaLR(actor_optimizer, lambda epoch: args.lr_decay ** epoch)
     if checkpoint:
         actor_optimizer.load_state_dict(checkpoint["actor_opt"])
-        # issue with pytorch1.12.0(https://github.com/pytorch/pytorch/issues/80809)
-        # resolved in 1.12.1
-        # actor_optimizer.param_groups[0]["capturable"] = True
         if args.start_epoch == int(os.path.basename(args.cp_path).split(".")[0]):
             lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-        print(f"lr:{lr_scheduler.get_last_lr()[0]}")
     return actor, actor_optimizer, lr_scheduler
 
 
 def set_baseline(parallel, actor, checkpoint):
-    # Note1. deepcopy must come after forward propagation with no grad or before training. Othrewise, RuntimeError occurs.
-    # Note1. RuntimeError: Only Tensors created explicitly by the user (graph leaves) support the deepcopy protocol at the moment
-    # Note2. actor, baseline別でDDPを作るとエラーが出るので,copy
     baseline = copy.deepcopy(actor)
     if checkpoint:
         print('Loading rollout baseline checkpoint...\n')
         if parallel:
             state_dict = {}
             for key, val in checkpoint["rollout_baseline"].items():
+                # rename to use DDP
                 state_dict["module." + key] = val
             baseline.load_state_dict(state_dict)
         else:
@@ -270,42 +219,25 @@ def gather_samples(rank, args, baseline_samples, actor_samples):
         return None, None
 
 
-def train_dist(rank, args, parallel):
-    if args.debug:
-        logging.basicConfig(level=logging.INFO)
+def train_dist(rank, args, parallel, logger, cp_dir):
     device = torch.device("cpu") if (args.no_gpu or not torch.cuda.is_available()) else torch.device('cuda', rank)
     print(f"{rank}: Running train_dist on device {device}.")
     if parallel:
         setup(rank, args.world_size, args)
 
     torch.manual_seed(args.seed + rank)
-    # TODO: Is "+rank" necessary?
-    # https://pytorch.org/docs/1.12/data.html#randomness-in-multi-process-data-loading
-    logging.info(f"rank:{rank}, {torch.initial_seed()}")
 
     # initialize env
-    if args.veh_sel == "chr":
-        # chronological vehicle selection
-        train_env = Env(rank=rank, device=device, world_size=args.world_size, sample_num=args.train_samples, global_batch_size=args.train_batch_size)
-        val_env = Env(rank=rank, device=device, world_size=args.world_size, sample_num=args.val_samples, global_batch_size=args.val_batch_size)
-        val_env.load_maps(args.n_custs, args.max_demand)  # validation data is fixed
-        ttest_env = Env(rank=rank, device=device, world_size=args.world_size, sample_num=args.ttest_samples, global_batch_size=args.val_batch_size)
-    else:
-        # alternating vehicle selection
-        train_env = AltEnv(rank=rank, device=device, world_size=args.world_size, sample_num=args.train_samples, global_batch_size=args.train_batch_size)
-        val_env = AltEnv(rank=rank, device=device, world_size=args.world_size, sample_num=args.val_samples, global_batch_size=args.val_batch_size)
-        val_env.load_maps(args.n_custs, args.max_demand)  # validation data is fixed
-        ttest_env = AltEnv(rank=rank, device=device, world_size=args.world_size, sample_num=args.ttest_samples, global_batch_size=args.val_batch_size)
+    train_env = Env(rank=rank, device=device, world_size=args.world_size, sample_num=args.train_samples, global_batch_size=args.train_batch_size)
+    val_env = Env(rank=rank, device=device, world_size=args.world_size, sample_num=args.val_samples, global_batch_size=args.val_batch_size)
+    val_env.load_maps(args.n_custs, args.max_demand)  # validation data is fixed
+    ttest_env = Env(rank=rank, device=device, world_size=args.world_size, sample_num=args.ttest_samples, global_batch_size=args.val_batch_size)
 
     # initialize models
-    # TODO: env(seed=1)から再開すると、学習データが被る？？
     checkpoint = load_checkpoint(rank, device, args)
     actor, actor_optimizer, lr_scheduler = set_actor(rank, device, parallel, args, checkpoint)
     baseline = set_baseline(parallel, actor, checkpoint)
     bl_rewards = None
-
-    if rank == 0:
-        logger, cp_dir = setup_logger(args)
 
     # start training
     for epoch in range(args.start_epoch + 1, args.end_epoch + 1):
@@ -315,12 +247,9 @@ def train_dist(rank, args, parallel):
         train_env.make_maps(args.n_custs, args.max_demand)
 
         if rank == 0:
-            if args.curriculum:
-                print(f"training on V{args.n_agents}-C{args.n_custs}")
             pbar = tqdm(total=args.train_batches)
         while(train_env.next()):
             step += 1
-            # logging.info(f"rank{rank} @step{step}: actor.param={actor.module.embedder_node.embed.weight[0]}")
             # [B]
             sum_logprobs, train_rewards, _, _ = sample_actor(args, train_env, actor, args.n_agents, args.speed, args.load, test=False)
             train_reward_mean = train_rewards.mean()  # [1]
@@ -332,17 +261,13 @@ def train_dist(rank, args, parallel):
                 _, bl_rewards, _, _ = sample_actor(args, train_env, baseline, args.n_agents, args.speed, args.load, test=True)
             # ACTOR UPDATE
             # [B]
-            advantage = (train_rewards - bl_rewards).detach()  # bl_rewardsにcriticを用いる場合のためにdetach()
+            advantage = (train_rewards - bl_rewards).detach()
             # [1]
-            # torch.autograd.set_detect_anomaly(True)
             actor_loss = (sum_logprobs * advantage).mean()
             actor_optimizer.zero_grad()
             actor_loss.backward()
-            logging.info(f"rank:{rank}, after backward")
-            # distributed synchronization points
             nn.utils.clip_grad_norm_(actor.parameters(), args.max_grad_norm)
             actor_optimizer.step()
-            logging.info(f"rank:{rank}, after step")
 
             # log
             if step % args.log_interval == 0:
@@ -360,7 +285,6 @@ def train_dist(rank, args, parallel):
                     logger.output()
                 if parallel:
                     dist.barrier()
-                    logging.info(f"{rank}: after barrier val")
             if rank == 0:
                 pbar.update(1)
         if rank == 0:
@@ -370,39 +294,26 @@ def train_dist(rank, args, parallel):
         # update baseline
         # torch.tensor([ttest_samples/world_size] on each device)
         baseline_samples, actor_samples = sample_test(args, ttest_env, baseline, actor, args.n_custs, args.n_agents, args.speed, args.load)
-        logging.info(f"{rank}:after ttest sample")
         if parallel:
             # torch.tensor([ttest_samples]) on rank 0, None on other ranks
             baseline_samples, actor_samples = gather_samples(rank, args, baseline_samples, actor_samples)
         if rank == 0:
             needs_update = check_update(device, args, actor_samples.cpu().numpy(), baseline_samples.cpu().numpy())
         else:
-            # 受け取る変数を作成
+            # flag to use to receice broadcasted bool
             needs_update = torch.tensor(True, device=device, dtype=torch.bool)
         if parallel:
             # sync
             dist.barrier()
-            logging.info(f"{rank}:after barrier ttest")
             dist.broadcast(needs_update, 0)
-            logging.info(f"{rank}: received flag {needs_update}")
         if needs_update or epoch == 1:
             baseline = copy.deepcopy(actor)
-            logging.info(f"{rank}: actor cloned to baseline")
 
-        if rank == 0:
-            if epoch % args.render_interval == 0 or epoch == args.end_epoch:
-                # render result
-                val_env.reindex()
-                val_env.next()
-                _, val_rewards, key_agents, routes = sample_actor(args, val_env, actor, args.n_agents, args.speed, args.load, test=True, out_tour=True)
-                logger.render(val_env.location.cpu(), routes, val_rewards.cpu(), key_agents)
-
-            if epoch % args.cp_interval == 0 or epoch == args.end_epoch:
-                # save model
-                save(parallel, cp_dir, epoch, actor, actor_optimizer, lr_scheduler, baseline)
+        if rank == 0 and (epoch % args.cp_interval == 0):
+            # save model
+            save(parallel, cp_dir, epoch, actor, actor_optimizer, lr_scheduler, baseline)
         if parallel:
             dist.barrier()
-            logging.info(f"{rank}:after barrier @ end of epoch")
 
     if rank == 0:
         logger.close()
@@ -411,13 +322,24 @@ def train_dist(rank, args, parallel):
 
 
 def main(args):
+    # setup log
+    start_time = datetime.datetime.now()
+    save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results', args.title, start_time.strftime('%Y-%m-%d-%H-%M-%S'))
+    cp_dir = os.path.join(save_dir, "checkpoints")
+    log_path = os.path.join(save_dir, "log.csv")
+    os.makedirs(cp_dir)
+    logger = Logger(args, start_time, log_path)
+    # record args
     pp.pprint(vars(args))
+    with open(os.path.join(cp_dir, "args.json"), 'w') as f:
+        json.dump(vars(args), f, indent=True)
+    
     if args.world_size > 1:
         print(f"\n===== Spawn {args.world_size} processes =====")
-        mp.spawn(train_dist, args=(args, True), nprocs=args.world_size, join=True)
+        mp.spawn(train_dist, args=(args, True, logger, cp_dir), nprocs=args.world_size, join=True)
     else:
         print(f"\n===== Spawn single process =====")
-        train_dist(rank=0, args=args, parallel=False)
+        train_dist(rank=0, args=args, parallel=False, logger=logger, cp_dir=cp_dir)
 
 
 if __name__ == "__main__":

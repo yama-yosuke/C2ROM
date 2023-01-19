@@ -9,43 +9,27 @@ from collections import OrderedDict
 
 
 class Logger():
-    def __init__(self, args, start_time, save_dir, img_dir):
+    def __init__(self, args, start_time, log_path):
         """
-        Logger
         Args:
-            start_time: (datetime.datetime)logの起点
-            save_dir
-            img_dir: renderの保存先
+            start_time (datetime.datetime): start time of training 
+            log_path (str): path to log_file
         """
         self.start_time = start_time
-        self.img_dir = img_dir
-        self.save_dir = save_dir
-
-        # set csv log
-        log_name = '{}.csv'.format(args.actor_type)
-        self.log_path = os.path.join(save_dir, log_name)
-
-        # argsの記録
+        self.log_path = log_path
+        
+        # record args
         settings = self.make_settings(args)
         with open(self.log_path, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=settings.keys())
             writer.writeheader()
             writer.writerow(settings)
 
-        # 学習進捗のヘッダー
+        # columns to save in log file
         self.header_csv = ['epoch', 'step', "lr", 'sample', 'time', 'train/actor_reward', 'train/actor_loss', 'val/actor_reward']
         with open(self.log_path, 'a', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=self.header_csv)
             writer.writeheader()
-
-        # set wandb
-        self.no_wandb = args.no_wandb
-        if not self.no_wandb:
-            wandb.init(
-                project=f"HCVRP({args.title})",
-                config=settings,
-                name=settings["save dir"]
-            )
 
         # logs
         self.logs = {}
@@ -54,13 +38,11 @@ class Logger():
 
     def make_settings(self, args):
         """
-        argsから記録したい情報をまとめる
+        get args to save
         """
         settings = OrderedDict([
             ("title", args.title),
             ("save dir", os.path.basename(self.save_dir)),
-            ("major actor type", args.actor_type.split(".")[0]),
-            ("actor type", args.actor_type),
             ("train batch size", args.train_batch_size),
             ("num heads", args.n_heads),
             ("num layers(node)", args.n_layers_n),
@@ -73,7 +55,6 @@ class Logger():
             ("dropout", args.dropout),
             ("end epochs", args.end_epoch),
             ("train samples", args.train_samples),
-            ("n foresight", args.n_foresight)
         ])
         return settings
 

@@ -4,41 +4,40 @@ import logging
 
 
 class Env(object):
-    '''
-    Generate a batch of environments of nodes with randomized features
-    '''
 
-    def __init__(self, rank, device, world_size, sample_num, global_batch_size, rep=1):
+    def __init__(self, rank, device, world_size, instance_num, global_batch_size, rep=1):
         """
-        rank
-        device: rank(int) or cpu
-        world_size: total num of process
-        sample_num: sample num (before scatter)
-        global_batch_size: (globalB)sample num per batch (before scatter)
+        Args:
+            rank:
+            device: rank(int) or cpu
+            world_size: total num of process
+            instance_num: number of instances per iteration
+            global_batch_size: (globalB), batch size(before scattering to each device) 
+            rep: num of sampling(1 if greedy) 
         """
         # env setting
         self.rank = rank
         self.device = device
         self.world_size = world_size
-        self.sample_num = sample_num
+        self.instance_num = instance_num
         self.rep = rep  # for sampling
         self.global_batch_size = global_batch_size
-        self.fraction = global_batch_size % world_size  # batchの端数はmaster(rank=0)が処理
-        self.batch_size = ((global_batch_size // world_size) + self.fraction) if rank == 0 else (global_batch_size // world_size)  # batch size for each device
+        assert instance_num % global_batch_size == 0, "instance_num cannnot be divided by batch_size"
+        self.batch_num = instance_num // global_batch_size  # number of batches per iterarion(same in all devices)
+        # calculate batch size in each device(localB)
+        self.fraction = global_batch_size % world_size
+        self.batch_size = ((global_batch_size // world_size) + self.fraction) if rank == 0 else (global_batch_size // world_size)
         self.calc_batch_size = self.batch_size * rep  # batch size for each device including repetition for sampling
-        self.global_batch_size = global_batch_size
-        assert sample_num % global_batch_size == 0, "sample_num cannnot be divided by batch_size"
-        self.batch_num = sample_num // global_batch_size  # iteration times to finish (プロセスに依存しない)
-        self.sample_num = sample_num
+        
 
     def make_maps(self, n_custs, max_demand):
         self.n_nodes = n_custs + 1
         self.max_demand = max_demand
         init_demand = (torch.FloatTensor(self.batch_num, self.batch_size, self.n_nodes).uniform_(0, self.max_demand).int() + 1).float()
-        init_demand[:, :, 0] = 0  # depotのdemandは0
+        init_demand[:, :, 0] = 0  # demand of depot is 0
         # on CPU
         self.dataset = {
-            # [batch_num, localB, n_nodes, 2]
+            # [batch_num, localB(batch size in a device), n_nodes, 2]
             "location": torch.FloatTensor(self.batch_num, self.batch_size, self.n_nodes, 2).uniform_(0, 1),
             # [batch_num, localB, n_nodes]
             "init_demand": init_demand
@@ -75,7 +74,7 @@ class Env(object):
 
     def next(self):
         """
-        datasetの次のindexのdataを取得
+        get next batch data
         Returns:
             True if next data exists, else False
         """
@@ -85,24 +84,6 @@ class Env(object):
         self.init_demand_ori = self.dataset["init_demand"][self.index].clone().repeat(self.rep, 1)  # on CPU, [b, n_nodes]
         self.index += 1
         return True
-
-    def clone(self):
-        return Env(self.rank, self.device, self.world_size, self.sample_num, self.global_batch_size)
-
-    def clone_static(self, env):
-        self.n_nodes = env.n_nodes
-        self.location = env.location
-        self.init_demand_ori = env.init_demand_ori
-        self.n_agents = env.n_agents
-        self.speed = env.speed
-        self.max_load = env.max_load
-
-    def clone_dynamic(self, env):
-        self.next_agent = env.next_agent.clone()
-        self.position = env.position.clone()
-        self.time_to_arrival = env.time_to_arrival.clone()
-        self.load = env.load.clone()
-        self.demand = env.demand.clone()
 
     def init_deploy(self, n_agents, speed, max_load, agent_id=0):
         """
