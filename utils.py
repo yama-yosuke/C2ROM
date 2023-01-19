@@ -54,7 +54,7 @@ class Logger():
             ("max grad norm", args.max_grad_norm),
             ("dropout", args.dropout),
             ("end epochs", args.end_epoch),
-            ("train samples", args.train_samples),
+            ("train samples", args.train_instance_num),
         ])
         return settings
 
@@ -150,7 +150,7 @@ class Logger():
 def sort(feat, index):
     """
     featのdim_to_sort次元について、indexで示した列が最初に並ぶようにsortする
-    Params:
+    Args:
         feat: [B, dim_feat, dim_to_sort], features to bo sorted
         index: [B, 1], index of next_agent
     Returns:

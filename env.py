@@ -21,13 +21,13 @@ class Env(object):
         self.world_size = world_size
         self.instance_num = instance_num
         self.rep = rep  # for sampling
-        self.global_batch_size = global_batch_size
+        self.global_batch_size = global_batch_size  # globalB
         assert instance_num % global_batch_size == 0, "instance_num cannnot be divided by batch_size"
         self.batch_num = instance_num // global_batch_size  # number of batches per iterarion(same in all devices)
         # calculate batch size in each device(localB)
         self.fraction = global_batch_size % world_size
-        self.batch_size = ((global_batch_size // world_size) + self.fraction) if rank == 0 else (global_batch_size // world_size)
-        self.calc_batch_size = self.batch_size * rep  # batch size for each device including repetition for sampling
+        self.batch_size = ((global_batch_size // world_size) + self.fraction) if rank == 0 else (global_batch_size // world_size)  # localB
+        self.calc_batch_size = self.batch_size * rep  # batch size for each device including repetition for sampling, # calcB
         
 
     def make_maps(self, n_custs, max_demand):
@@ -80,55 +80,58 @@ class Env(object):
         """
         if self.index == self.batch_num:
             return False
-        self.location = self.dataset["location"][self.index].to(self.device).repeat(self.rep, 1, 1)  # on CUDA, [b, n_nodes, 2]
-        self.init_demand_ori = self.dataset["init_demand"][self.index].clone().repeat(self.rep, 1)  # on CPU, [b, n_nodes]
+        self.location = self.dataset["location"][self.index].to(self.device).repeat(self.rep, 1, 1)  # on CUDA, [calcB, n_nodes, 2]
+        self.init_demand_ori = self.dataset["init_demand"][self.index].clone().repeat(self.rep, 1)  # on CPU, [calcB, n_nodes]
         self.index += 1
         return True
 
     def init_deploy(self, n_agents, speed, max_load, agent_id=0):
         """
-        初期配置に戻す
+        set fleet and node state as the initial state
         Args:
-            agent_id: int, 最初に動かすagentのid
+            n_agents:
+            speed:
+            max_load:
+            agent_id (int): the first agent to move
         Retruns:
-            static["batch_size"]: int
-            static["n_nodes"]: int
-            staitc["n_agents"]: int
-            static["location"] : [B, n_nodes, 2], location of nodes
-            static["max_load"] : [B, n_agents], max load of agents(normalized)
-            static["speed"] : [B, n_agents], speed
-            static["init_demand]: [B, n_nodes], initial demand(normalized)
+            static["batch_size"] (int): 
+            static["n_nodes"] (int):
+            staitc["n_agents"] (int):
+            static["location"] (Tensor): location of nodes, shape=[calcB, n_nodes, 2]
+            static["max_load"] (Tensor) : max load of agents(normalized), shape=[calcB, n_agents]
+            static["speed"] (Tensor) : speed, shape=[calcB, n_agents]
+            static["init_demand] (Tensor): initial demand(normalized), shape=[calcB, n_nodes]
 
-            dynamic["next_agent"] : [B, 1], next agent
-            dynamic["position"] : [B, n_agents], position of agent
-            dynamic["time_to_arrival"] : [B, n_agents], time to arrival
-            dynamic["load"] : [B, n_agents], load(normalized, 初期値はstaticのmax loadと同じ)
-            dynamic["demand]: [B, n_nodes], current demand(normalized, , 初期値はstaticのinit demandと同じ)
-            dynamic["current_time"] : [B, 1], current time(init=0)
-            dynamic["done"] : [B, 1], done(init=False)
+            dynamic["next_agent"] (Tensor): next agent, shape=[calcB, 1]
+            dynamic["position"] (Tensor): position(node index) of agent, shape=[calcB, n_agents]
+            dynamic["time_to_arrival"] (Tensor): time to arrival, shape=[calcB, n_agents]
+            dynamic["load"] (Tensor): load(normalized), shape=[calcB, n_agents]
+            dynamic["demand] (Tensor): current demand, shape=[calcB, n_nodes]
+            dynamic["current_time"] (Tensor): current time(init=0), shape=[calcB, 1]
+            dynamic["done"] (Tensor): done(init=False), shape=[calcB, 1]
 
-            mask: [B, n_nodes], (init=1)
+            mask (Tensor): (init=1), shape=[calcB, n_nodes]
         """
         # agent settings
-        self.n_agents = n_agents  # int
-        base_of_norm = max(max_load)  # int(demand, loadはmax_loadの最大値で正規化する)
+        self.n_agents = n_agents
+        base_of_norm = max(max_load)
 
         # on CUDA
         # static
-        self.speed = torch.tensor(speed, device=self.device).expand(self.calc_batch_size, -1)  # [B, n_agents]
-        self.max_load = torch.tensor(max_load, device=self.device).expand(self.calc_batch_size, -1) / base_of_norm  # [B, n_agents]
-        self.init_demand = (self.init_demand_ori / base_of_norm).to(self.device)  # [B, n_nodes]
+        self.speed = torch.tensor(speed, device=self.device).expand(self.calc_batch_size, -1)
+        self.max_load = torch.tensor(max_load, device=self.device).expand(self.calc_batch_size, -1) / base_of_norm
+        self.init_demand = (self.init_demand_ori / base_of_norm).to(self.device)
 
         # dynamic
         self.next_agent = torch.full((self.calc_batch_size, 1), agent_id, dtype=int, device=self.device)
         self.position = torch.full((self.calc_batch_size, self.n_agents), 0, dtype=int, device=self.device)  # init position is depot
         self.time_to_arrival = torch.zeros(self.calc_batch_size, self.n_agents, device=self.device)
-        self.load = self.max_load.clone()  # [B, n_agents]
-        self.demand = self.init_demand.clone()  # [B, n_nodes]
+        self.load = self.max_load.clone()
+        self.demand = self.init_demand.clone()
         self.current_time = torch.zeros(self.calc_batch_size, 1, device=self.device)
         self.done = torch.full((self.calc_batch_size, 1), False, dtype=bool, device=self.device)
 
-        # [B, n_agents] holding True if agent is next acting agent of the batch
+        # [calcB, n_agents] holding True if agent is next acting agent of the batch
         agent_mask = torch.arange(self.n_agents, device=self.device).expand(self.calc_batch_size, -1).eq(self.next_agent)
         mask = self.make_mask(agent_mask)
 
@@ -142,8 +145,6 @@ class Env(object):
             "init_demand": self.init_demand,
         }
 
-        # Clone in necessary for the variables which will be in-placed afterward(in env.step)
-        # otherwise, RuntimeError is raised in backpropagation : one of the variables needed for gradient computation has been modified by an inplace operation
         dynamic = {
             "next_agent": self.next_agent.clone(),
             "position": self.position.clone(),

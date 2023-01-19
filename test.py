@@ -1,4 +1,4 @@
-from train import sample_actor
+from train import execute_routing
 import os
 import datetime
 import argparse
@@ -221,7 +221,7 @@ def test(args, actor, n_agents, n_custs, speed, max_load, img_path):
 
     pbar = tqdm(total=test_env.batch_num)
     while(test_env.next()):
-        _, rewards, key_agents, routes, process_time = sample_actor(args, test_env, actor, n_agents, speed, max_load, test=True, out_tour=args.rendering, sampling=args.sampling, rep=args.n_sampling, calc_time=True)
+        _, rewards, key_agents, routes, process_time = execute_routing(args, test_env, actor, n_agents, speed, max_load, test=True, out_tour=args.rendering, sampling=args.sampling, rep=args.n_sampling, calc_time=True)
         rewards_list.append(rewards.reshape(args.n_sampling, -1).permute(1, 0))  # list of len sample_num/batch_size, ele=tensor[batch_size, n_sampling]
         process_time_list.append(process_time)
         pbar.update(1)

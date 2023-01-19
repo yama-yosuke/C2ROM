@@ -2,84 +2,56 @@ import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils import sort
 
 import math
 
 from models.modules import Embedder, simpleMHA, SelfAttention, AttentionLayer, MHA
 
 class PolicyNetwork(nn.Module):
-    """
-    agent info in node(demand, time_to_node) + node MHA after casting
-    v10.4のcontextにagent speedを追加
-    Node Attention = Multi-Head Attention + FF
-    Agent Attention = Source-Target Attention + FF
-    Query: Next Agent
-    Memory: Other Agent
-    """
-
-    def __init__(self, dim_embed, n_heads, n_layers_n, n_layers_a, norm_n, norm_a,
-                 tanh_clipping, dropout, target, device, hidden_dim=512, dim_n=3, dim_a=4, n_agents=3):
-        """
-        Args:
-            dim_embed: 埋め込み次元
-            n_heads: MHAのヘッド数
-            n_layers_n: node用SelfAttentionのlayer数
-            n_layers_a: agent用SelfAttentionのlayer数
-            n_norm_n: node用のNormalization(batch, layer, instance or None)
-            n_norm_a: node用のNormalization(batch, layer, instance or None)
-            tanh_clipping
-            dropout: droput ratio
-            target: "MS" or "MM"
-            device
-            hidden_dim: FFの隠れ層の次元(default=512)
-            dim_n: nodeの次元(default=3, (x, y, demand))
-            dim_a: agentの次元(default=6, (x, y, time_to_arrival, load, init_load, speed))
-
-            b: batch size without repetion
-            B: batch size with repetition
-        """
+    def __init__(self, dim_embed, n_heads, tanh_clipping, dropout, target, device, hidden_dim=512, n_agents=3):
         super(PolicyNetwork, self).__init__()
 
-        self.n_heads = n_heads
+        self.n_heads = n_heads  #  number of heads in MHA
         self.tanh_clipping = tanh_clipping
         self.device = device
         self.target = target
         self.n_agents = n_agents
 
-        # fixed network
-        self.embedder_node = Embedder(dim_n, dim_embed)
+        # node encoder
+        self.embedder_node = Embedder(3, dim_embed)
         self.embedder_depot = Embedder(2, dim_embed)
-        self.mha_n = SelfAttention(dim_embed, n_heads, n_layers_n - 1, norm_n, dropout, hidden_dim)
-        self.project_memory = Embedder(dim_embed, 3 * dim_embed)  # memory embedding
+        self.mha_node = SelfAttention(dim_embed, n_heads, 2, "batch", dropout, hidden_dim)
         self.project_graph = Embedder(dim_embed, dim_embed)  # graph embedding
 
-        # active networks
+        # fleet encoder
         self.project_context = Embedder(dim_embed + 3, dim_embed)
-        self.embedder_node_active = Embedder(2 * self.n_agents, dim_embed)
-        self.project_memory_active = Embedder(dim_embed, 3 * dim_embed)
-        self.mha_n_active = SelfAttention(dim_embed, n_heads, 1, "None", dropout, hidden_dim)
-        self.project_glimpse = Embedder(dim_embed, dim_embed)
+        self.embedder_fleet = Embedder(2 * self.n_agents, dim_embed)
+        self.mha_fleet = SelfAttention(dim_embed, n_heads, 1, "None", dropout, hidden_dim)
 
+        # decoder
+        self.project_memory = Embedder(dim_embed, 3 * dim_embed)  # memory embedding
+        self.project_memory_active = Embedder(dim_embed, 3 * dim_embed)
+        self.project_glimpse = Embedder(dim_embed, dim_embed)
+        
         for p in self.parameters():
             if len(p.shape) > 1:
                 nn.init.xavier_uniform_(p)
 
     def precompute(self, node):
         """
-        Precomute fixed data(node)
+        Precomute fixed data(node encoder)
         Args:
-            node: [b, dim_n=3, n_nodes] holding all node attributes(x, y, demand*)
+            node (Tensor): holding all node attributes(x, y, demand*), shape=[calcB, 3, n_nodes]
         """
-        # Embedding [b, dim_embed, n_nodes] & Attention [b, dim_embed, n_nodes]
+        # [calcB, dim_embed, n_nodes]
         node_embed = self.mha_n(
             torch.cat((self.embedder_depot(node[:, :2, 0].unsqueeze(-1)), self.embedder_node(node[:, :, 1:])), dim=-1)
         )
-        # [b, dim_embed, 1]
+        # [calcB, dim_embed, 1]
         depot_embed = node_embed[:, :, 0].unsqueeze(2)
-        # [b, 3*dim_embed, n_nodes]
+        # [calcB, 3*dim_embed, n_nodes]
         memory = self.project_memory(node_embed)
-        # [b, dim_embed, 1]
+        # [calcB, dim_embed, 1]
         graph_embed = self.project_graph(node_embed.mean(dim=2, keepdim=True))
 
         fixed = {
@@ -92,7 +64,7 @@ class PolicyNetwork(nn.Module):
 
     def calc_ttn(self, location, position, tta, speed):
         """
-        Params:
+        Args:
             location: [B, n_nodes, 2]
             position: [B, n_agents]
             tta: [B, n_agents], time to arrival
@@ -114,7 +86,7 @@ class PolicyNetwork(nn.Module):
 
     def sort(self, feat, next_agent, n_agents):
         """
-        Params:
+        Args:
             feat: [B, n_agents*3, n_nodes], features to bo sorted
             next_agent: [B, 1], index of next_agent
         Returns:
@@ -191,7 +163,7 @@ class PolicyNetwork(nn.Module):
         # [B, 2*n_agents, n_nodes]
         node_input = self.sort(node_input_, dynamic["next_agent"], self.n_agents)
         # sampling時の律速↓
-        node_embed = self.mha_n_active(self.embedder_node_active(node_input))
+        node_embed = self.mha_n_active(self.embedder_fleet(node_input))
         # Encoder(node)
         # [b*rep, 3*dim_embed, n_nodes] -> [B, dim_embed, n_nodes] for each
         glimpse_key, glimpse_val, logit_key = (fixed["memory"].repeat(rep, 1, 1) + self.project_memory_active(node_embed)).chunk(3, dim=1)
@@ -210,24 +182,16 @@ class PolicyNetwork(nn.Module):
         logprob = F.log_softmax(logits, 1)
         return logprob
 
-    def forward(self, args, env, n_agents, speed, max_load, out_tour, sampling=False, rep=1):
+    def forward(self, args, env, n_agents, speed, max_load, sampling=False, rep=1):
         """
-        Params:
-            env: Environment
-            speed: list of n_agnets
-            max_load: list of n_agnets
-            out_tour: If true, output tour index
         Returns:
-            sum_logprobs:[B](cuda), 選んだactionに対するlogprobのsum
-            rewards: [B](cuda), min-max of total time or min-sum of total time
-            key_agents: [B](cpu), MMにおいて、最も時間のかかったactorのindex, MSならNone
-            routes: list of [B, n_agents, n_visits](cpu)
+            sum_logprobs (Tensor): sum of log probability for selected action, shpae=[calcB]
+            rewards (Tensor): shape=[calcB]
+            routes (list): sequence of node index in visited order, shape=[calcB, n_agents, n_visits]
         """
         # RESET ENVIRONMENT
         static, dynamic, mask = env.init_deploy(n_agents, speed, max_load)
 
-        # [B, 3(x, y, demand), n_nodes] holding all node attributes
-        # (location[B, 2, n_nodes], demand[B, 1, n_nodes])
         node_input = torch.cat((static["location"][:static["batch_size"]].transpose(1, 2), dynamic["demand"][:static["batch_size"]].unsqueeze(1)), 1)
         fixed = self.precompute(node_input)
 
@@ -236,62 +200,55 @@ class PolicyNetwork(nn.Module):
         logprobs = []
         additinal_distances = []
         while not dynamic["done"].all():
-            # [B, n_nodes]
+            # [calcB, n_nodes]
             logprob = self.sample_step(static, dynamic, mask, fixed, rep)
             if self.training or sampling:
                 prob_dist = torch.distributions.Categorical(logprob.exp())
-                # [B]
+                # [calcB]
                 action = prob_dist.sample()  # Stochastic policy
             else:
-                # [B]
+                # [calcB]
                 action = torch.argmax(logprob, 1)  # Greedy policy
             
-            logprob_selected = torch.gather(logprob, dim=1, index=action.unsqueeze(1))  # [B, 1]
+            logprob_selected = torch.gather(logprob, dim=1, index=action.unsqueeze(1))  # [calcB, 1]
             agent_id = dynamic["next_agent"]  # before env.step
-            # this is still called skipped even though it's just self.done
-            skipped = dynamic["done"]
+            done = dynamic["done"]
 
-            # Clone in necessary because action must not be in-placed(because it is used in calc of logprob_selected)
-            # otherwise, RuntimeError is raised in backpropagation : one of the variables needed for gradient computation has been modified by an inplace operation
-            action_cp = action.clone().detach()  # [B]
+            action_cp = action.clone().detach()  # [calcB]
 
             dynamic, mask, additional_distance_oh = env.step(action_cp.unsqueeze(1))
             # APPEND RESULTS
-            action_cp[skipped.squeeze(1)] = -1  # set skips to -1 [B]
-            # target = [B, n_agents], index=[B, 1], src=[B, 1]
-            # [B, n_agents], 動いたagentは行先ノード、他は-1
+            action_cp[done.squeeze(1)] = -1  # set terminated episode to -1 [calcB]
+            # target = [calcB, n_agents], index=[B, 1], src=[B, 1]
+            # [calcB, n_agents], set next node index to active vehciel, set -1 to other vehicles
             action_agent_wise = torch.scatter(torch.full((static["batch_size"]*rep, static["n_agents"]), -1, device=self.device),
                                               dim=1, index=agent_id, src=action_cp.unsqueeze(1))
-            actions.append(action_agent_wise)  # list of [B, n_agents]
+            actions.append(action_agent_wise)  # list of [calcB, n_agents]
             logprobs.append(logprob_selected)
-            # additional_distance: [B, n_agents]
+            # additional_distance: [calcB, n_agents]
             additinal_distances.append(additional_distance_oh)
         # PROCESS RESULTS
-        # [B]
+        # [calcB]
         sum_logprobs = torch.cat(logprobs, 1).sum(1)
-        # [B, n_agents]
+        # [calcB, n_agents]
         total_distance = torch.stack(additinal_distances, 1).sum(1).squeeze(1)
-        # [B, n_agents]
+        # [calcB, n_agents]
         total_time = total_distance / static["speed"]
         if args.target == "MS":
-            rewards = total_time.sum(1)  # [B], sum of agents' tour_length
-            key_agents = None
+            rewards = total_time.sum(1)  # [calcB]
         else:
             # min-max
-            rewards, key_agents = total_time.max(1)  # [B], max of agents' tota_time, max()は、val, indexのtupleを返す
+            rewards, _ = total_time.max(1)  # [calcB]
 
-        if out_tour:
-            # n_actionsは、ループの回数に等しい。n_visitsは、エピソード終了後を除いた訪問数
-            # [B, n_agents, n_actions]
-            routes = torch.stack(actions, 2).cpu()
-            # [B, n_agents, 1 + n_actions]
-            routes = torch.cat((torch.zeros_like(dynamic["position"], device=torch.device("cpu")).unsqueeze(2), routes), 2).tolist()
-            # i=each batch, j=each agent, k=each action(position)
-            # routes = list of [B, n_agents, n_visits]
-            routes = [[[k for k in j if k != -1] for j in i] for i in routes]
-        else:
-            routes = None
-        return sum_logprobs, rewards, key_agents.cpu(), routes
+        # [calcB, n_agents, n_actions]
+        routes = torch.stack(actions, 2).cpu()
+        # [calcB, n_agents, 1 + n_actions], add starting point(depot)
+        routes = torch.cat((torch.zeros_like(dynamic["position"], device=torch.device("cpu")).unsqueeze(2), routes), 2).tolist()
+        # i=each batch, j=each agent, k=each action(position)
+        # routes = list of [calcB, n_agents, n_visits]
+        routes = [[[k for k in j if k != -1] for j in i] for i in routes]
+
+        return sum_logprobs, rewards, routes
 
 
 

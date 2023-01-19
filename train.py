@@ -3,7 +3,6 @@ import os
 import datetime
 import copy
 import pprint as pp
-import logging
 
 import json
 from tqdm import tqdm
@@ -34,42 +33,37 @@ def cleanup():
     dist.destroy_process_group()
 
 
-def sample_actor(args, env, actor, n_agents, speed, max_load, test, out_tour=False, sampling=False, rep=1, calc_time=False):
+def execute_routing(args, env, model, n_agents, speed, max_load, test, sampling=False, rep=1):
     """
-    Params:
+    Args:
         env: Environment
-        actpr: actor
-        speed: list of n_agnets
-        max_load: list of n_agnets
-        test: If True, greedy 
-        out_tour: If true, output tour index
+        model: actor or baseline
+        speed (list): list of speeds of all vehicles 
+        max_load (list): list of loads of all vehicles
+        test (bool): model mode
+        sampling (bool): If True, select action stochastically
+        rep (int): sampling num in sampling strategy
     Returns:
-        sum_logprobs:[B](cuda), 選んだactionに対するlogprobのsum
-        rewards: [B](cuda), min-max of total time or min-sum of total time
-        key_agents: [B](cpu), MMにおいて、最も時間のかかったactorのindex, MSならNone
-        routes: list of [B, n_agents, n_visits](cpu)
+        sum_logprobs (Tensor): sum of logprobs of selected action, shape=[calcB]
+        rewards (Tensor): min-max(MM) of total time or min-sum(MS) of total time, shape=[calcB]
+        routes (list): index of node in visited order, shape=[calcB, n_agents, n_visits]
     """
     if rep > 1:
         assert sampling and test, "reputation is only available in test sampling"
-    actor.train(mode=(not test))  # trainingならTureにする
+    model.train(mode=(not test))
     with torch.set_grad_enabled(mode=(not test)):
-        start = time.time()
-        sum_logprobs, rewards, key_agents, routes = actor(args, env, n_agents, speed, max_load, out_tour, sampling, rep)
-        process_time = (time.time() - start)
-    if calc_time:
-        return sum_logprobs, rewards, key_agents, routes, process_time
-    else:
-        return sum_logprobs, rewards, key_agents, routes
+        sum_logprobs, rewards, routes = model(args, env, n_agents, speed, max_load, sampling, rep)
+
+    return sum_logprobs, rewards, routes
 
 
 def calc_ave(args, rewards, mv_ave):
-    """
-    rolloutのwarmup中に移動平均を計算
+    """    
     Args:
-        rewards: [B]
-        mv_ave: [B], 移動平均(バッチ平均)
+        rewards: [B], train rewards
+        mv_ave: [B], moving average of train reward
     Returns:
-        mv_ave: [B]
+        mv_ave: [B], updated moving average of train reward
     """
     batch_mean = rewards.mean().expand_as(rewards)  # [B]
     if mv_ave is not None:
@@ -117,23 +111,26 @@ def set_baseline(parallel, actor, checkpoint):
     return baseline
 
 
-def check_update(device, args, actor_samples, baseline_samples):
+def check_update(device, args, actor_rewards, baseline_rewards):
     """
-    OneSidedPairedTTestで有意ならbaselineを更新する
+    conduct TTestOneSidedPairedTTest
+    Args:
+        args:
+        baseline_rewards (Tensor):  baseline rewards on rank0, shape=[ttest_samples]
+        actor_rewards (Tensor): actor rewards on rank0, shape=[ttest_samples]
     Returns:
         bool: if True, updating baseline is needed
     """
     print('\n===== OneSidedPairedTTest =====\n')
     # paired t test
-    t, p = ttest_rel(actor_samples, baseline_samples)  # sign(actor_samples - baseline_samples) = sign(t) → 学習しているならactor_samples < baseline_samples　→　t<0
+    t, p = ttest_rel(actor_rewards, baseline_rewards)
     p_val = p / 2  # one-sided
-    print("t={:.3e}".format(t))  # TODO: t>=0だと学習が進んでいない？？
+    print("t={:.3e}".format(t))
     if t >= 0:
         print("Warning!! t>=0")
         print("keep baseline (p_val={:.3e})\n".format(p_val))
         return torch.tensor(False, device=device)
     if p_val < args.ttest_alpha:
-        # 帰無仮説棄却
         print("update baseline (p_val={:.3e} < alpha={})\n".format(p_val, args.ttest_alpha))
         return torch.tensor(True, device=device)
     else:
@@ -159,62 +156,64 @@ def save(parallel, save_dir, epoch, actor, actor_optimizer, lr_scheduler, baseli
 def validate(args, val_env, actor, n_agents, speed, max_load):
     """
     Returns:
-        val_reward_mean: [1](on each actor's device)
+        val_reward_mean: [1](on each device)
     """
     val_reward_list = []
     val_env.reindex()  # val_dataset is used repeatedly
     while(val_env.next()):
-        _, val_rewards, _, _ = sample_actor(args, val_env, actor, n_agents, speed, max_load, test=True)
+        _, val_rewards,  _ = execute_routing(args, val_env, actor, n_agents, speed, max_load, test=True)
         val_reward_list.append(val_rewards.mean())
     val_reward_mean = torch.stack(val_reward_list, 0).mean()
     return val_reward_mean
 
 
-def sample_test(args, ttest_env, baseline, actor, n_custs, n_agents, speed, max_load):
+def test(args, ttest_env, baseline, actor, n_custs, n_agents, speed, max_load):
     """
+    sample solutions greedily on the same instances by baseline and actor and return thier rewards
+    Args:
     Returns:
-        baseline_samples: [ttest_samples/world_size] on each device
-        actor_samples: [ttest_samples/world_size] on each device
+        baseline_rewards (Tensor): baseline rewards on each device, shape=[ttest_samples/world_size]
+        actor_rewards (Tensor): actor rewards on each device, shape=[ttest_samples/world_size]
     """
     baseline_list = []
     actor_list = []
     ttest_env.make_maps(n_custs, args.max_demand)
     while(ttest_env.next()):
-        _, bl_rewards, _, _ = sample_actor(args, ttest_env, baseline, n_agents, speed, max_load, test=True)
+        _, bl_rewards, _ = execute_routing(args, ttest_env, baseline, n_agents, speed, max_load, test=True)
         baseline_list.append(bl_rewards)
-        _, actor_rewards, _, _ = sample_actor(args, ttest_env, actor, n_agents, speed, max_load, test=True)
+        _, actor_rewards, _ = execute_routing(args, ttest_env, actor, n_agents, speed, max_load, test=True)
         actor_list.append(actor_rewards)
-    baseline_samples = torch.cat(baseline_list, 0)  # torch.tensor [ttest_samples/world_size]
-    actor_samples = torch.cat(actor_list, 0)  # torch.tensor [ttest_samples/world_size]
-    return baseline_samples, actor_samples
+    baseline_rewards = torch.cat(baseline_list, 0)  # torch.tensor [ttest_samples/world_size]
+    actor_rewards = torch.cat(actor_list, 0)  # torch.tensor [ttest_samples/world_size]
+    return baseline_rewards, actor_rewards
 
 
-def gather_samples(rank, args, baseline_samples, actor_samples):
+def gather_rewards(rank, args, baseline_rewards, actor_rewards):
     """
+    gather test rewards on master device
     Args:
-        baseline_samples: [ttest_samples/world_size] on each device
-        actor_samples: [ttest_samples/world_size] on each device
+        baseline_rewards (Tensor): baseline rewards on each device, shape=[ttest_samples/world_size]
+        actor_rewards (Tensor): actor rewards on each device, shape=[ttest_samples/world_size]
     Returns:
         if rank == 0:
-            baseline_samples: torch.tensor[ttest_samples] on rank0
-            actor_samples: torch.tensor[ttest_samples] on rank0
+            baseline_rewards (Tensor):  baseline rewards on rank0, shape=[ttest_samples]
+            actor_rewards (Tensor): actor rewards on rank0, shape=[ttest_samples]
         else:
             None
             None
     """
     if rank == 0:
-        baseline_samples_list = [torch.zeros_like(baseline_samples) for _ in range(args.world_size)]
-        actor_samples_list = [torch.zeros_like(actor_samples) for _ in range(args.world_size)]
-        dist.gather(baseline_samples, gather_list=baseline_samples_list)
-        dist.gather(actor_samples, gather_list=actor_samples_list)
+        baseline_rewards_list = [torch.zeros_like(baseline_rewards) for _ in range(args.world_size)]
+        actor_rewards_list = [torch.zeros_like(actor_rewards) for _ in range(args.world_size)]
+        dist.gather(baseline_rewards, gather_list=baseline_rewards_list)
+        dist.gather(actor_rewards, gather_list=actor_rewards_list)
     else:
-        dist.gather(baseline_samples, dst=0)
-        dist.gather(actor_samples, dst=0)
+        dist.gather(baseline_rewards, dst=0)
+        dist.gather(actor_rewards, dst=0)
     if rank == 0:
-        logging.info(f"samples_list, len{len(baseline_samples_list)}, ele.shape{baseline_samples_list[0].shape}")
-        baseline_samples = torch.cat(baseline_samples_list, 0)  # np.array [ttest_samples]
-        actor_samples = torch.cat(actor_samples_list, 0)  # np.array [ttest_samples]
-        return baseline_samples, actor_samples
+        baseline_rewards = torch.cat(baseline_rewards_list, 0)  # np.array [ttest_samples]
+        actor_rewards = torch.cat(actor_rewards_list, 0)  # np.array [ttest_samples]
+        return baseline_rewards, actor_rewards
     else:
         return None, None
 
@@ -228,10 +227,10 @@ def train_dist(rank, args, parallel, logger, cp_dir):
     torch.manual_seed(args.seed + rank)
 
     # initialize env
-    train_env = Env(rank=rank, device=device, world_size=args.world_size, sample_num=args.train_samples, global_batch_size=args.train_batch_size)
-    val_env = Env(rank=rank, device=device, world_size=args.world_size, sample_num=args.val_samples, global_batch_size=args.val_batch_size)
+    train_env = Env(rank=rank, device=device, world_size=args.world_size, instance_num=args.train_instance_num, global_batch_size=args.train_batch_size)
+    val_env = Env(rank=rank, device=device, world_size=args.world_size, instance_num=args.val_instance_num, global_batch_size=args.val_batch_size)
     val_env.load_maps(args.n_custs, args.max_demand)  # validation data is fixed
-    ttest_env = Env(rank=rank, device=device, world_size=args.world_size, sample_num=args.ttest_samples, global_batch_size=args.val_batch_size)
+    ttest_env = Env(rank=rank, device=device, world_size=args.world_size, instance_num=args.ttest_instance_num, global_batch_size=args.val_batch_size)
 
     # initialize models
     checkpoint = load_checkpoint(rank, device, args)
@@ -243,27 +242,27 @@ def train_dist(rank, args, parallel, logger, cp_dir):
     for epoch in range(args.start_epoch + 1, args.end_epoch + 1):
         # calc offset
         step = (epoch - 1) * args.train_batches
-
+        # train data is generated on the fly
         train_env.make_maps(args.n_custs, args.max_demand)
 
         if rank == 0:
             pbar = tqdm(total=args.train_batches)
         while(train_env.next()):
             step += 1
-            # [B]
-            sum_logprobs, train_rewards, _, _ = sample_actor(args, train_env, actor, args.n_agents, args.speed, args.load, test=False)
-            train_reward_mean = train_rewards.mean()  # [1]
-            # baseline
+            # execute actor
+            sum_logprobs, train_rewards,  _ = execute_routing(args, train_env, actor, args.n_agents, args.speed, args.load, test=False)
+            train_reward_mean = train_rewards.mean()
+            
+            # execute baseline
             if epoch == 1:
-                # warm-up in rollout
+                # moving average of training reward is used instead of rollout baseline at initial epoch
                 bl_rewards = calc_ave(args, train_rewards, bl_rewards)
             else:
-                _, bl_rewards, _, _ = sample_actor(args, train_env, baseline, args.n_agents, args.speed, args.load, test=True)
-            # ACTOR UPDATE
-            # [B]
-            advantage = (train_rewards - bl_rewards).detach()
-            # [1]
-            actor_loss = (sum_logprobs * advantage).mean()
+                _, bl_rewards, _ = execute_routing(args, train_env, baseline, args.n_agents, args.speed, args.load, test=True)
+            
+            # update actor parameter
+            advantage = (train_rewards - bl_rewards).detach()  # [B]
+            actor_loss = (sum_logprobs * advantage).mean()  # [1]
             actor_optimizer.zero_grad()
             actor_loss.backward()
             nn.utils.clip_grad_norm_(actor.parameters(), args.max_grad_norm)
@@ -271,12 +270,15 @@ def train_dist(rank, args, parallel, logger, cp_dir):
 
             # log
             if step % args.log_interval == 0:
+                # execute validation on each device
                 val_reward_mean = validate(args, val_env, actor, args.n_agents, args.speed, args.load)
                 if parallel:
+                    # reduce results to rank0
                     dist.reduce(train_reward_mean, dst=0, op=dist.ReduceOp.SUM)
                     dist.reduce(actor_loss, dst=0, op=dist.ReduceOp.SUM)
                     dist.reduce(val_reward_mean, dst=0, op=dist.ReduceOp.SUM)
                 if rank == 0:
+                    # output log in rank0
                     sample = step * args.train_batch_size
                     train_reward_mean = (train_reward_mean / args.world_size).cpu().item()
                     actor_loss = (actor_loss / args.world_size).cpu().item()
@@ -291,22 +293,24 @@ def train_dist(rank, args, parallel, logger, cp_dir):
             pbar.close()
         lr_scheduler.step()
 
-        # update baseline
-        # torch.tensor([ttest_samples/world_size] on each device)
-        baseline_samples, actor_samples = sample_test(args, ttest_env, baseline, actor, args.n_custs, args.n_agents, args.speed, args.load)
+        # check if baseline needs updating
+        # execute routing on test data on each device using both baseline and actor
+        baseline_rewards, actor_rewards = test(args, ttest_env, baseline, actor, args.n_custs, args.n_agents, args.speed, args.load)
         if parallel:
-            # torch.tensor([ttest_samples]) on rank 0, None on other ranks
-            baseline_samples, actor_samples = gather_samples(rank, args, baseline_samples, actor_samples)
+           # gather rewards on rank0
+            baseline_rewards, actor_rewards = gather_rewards(rank, args, baseline_rewards, actor_rewards)
         if rank == 0:
-            needs_update = check_update(device, args, actor_samples.cpu().numpy(), baseline_samples.cpu().numpy())
+            # conduct TTest on rank0
+            needs_update = check_update(device, args, actor_rewards.cpu().numpy(), baseline_rewards.cpu().numpy())
         else:
-            # flag to use to receice broadcasted bool
+            # flag to use to receice broadcasted flag
             needs_update = torch.tensor(True, device=device, dtype=torch.bool)
         if parallel:
-            # sync
+            # broadcast TTest results to all devices
             dist.barrier()
             dist.broadcast(needs_update, 0)
         if needs_update or epoch == 1:
+            # update baseline
             baseline = copy.deepcopy(actor)
 
         if rank == 0 and (epoch % args.cp_interval == 0):
