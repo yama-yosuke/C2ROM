@@ -22,14 +22,17 @@ from scipy.stats import ttest_rel
 from options import get_options
 
 
-def setup(rank, world_size, args):
+def setup_mp(rank, world_size, args):
+    """
+    set up for multi-processing
+    """
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = args.port
     # initialize the process group
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
 
-def cleanup():
+def cleanup_mp():
     dist.destroy_process_group()
 
 
@@ -44,9 +47,9 @@ def execute_routing(args, env, model, n_agents, speed, max_load, test, sampling=
         sampling (bool): If True, select action stochastically
         rep (int): sampling num in sampling strategy
     Returns:
-        sum_logprobs (Tensor): sum of logprobs of selected action, shape=[calcB]
-        rewards (Tensor): min-max(MM) of total time or min-sum(MS) of total time, shape=[calcB]
-        routes (list): index of node in visited order, shape=[calcB, n_agents, n_visits]
+        Tensor: sum of logprobs of selected action, shape=[B]
+        Tensor: min-max(MM) of total time or min-sum(MS) of total time, shape=[B]
+        list: routes(index of node in visited order), shape=[B, n_agents, n_visits]
     """
     if rep > 1:
         assert sampling and test, "reputation is only available in test sampling"
@@ -60,10 +63,10 @@ def execute_routing(args, env, model, n_agents, speed, max_load, test, sampling=
 def calc_ave(args, rewards, mv_ave):
     """    
     Args:
-        rewards: [B], train rewards
-        mv_ave: [B], moving average of train reward
+        rewards (Tensor): shape=[B], train rewards
+        mv_ave (Tensor): shape=[B], moving average of train reward
     Returns:
-        mv_ave: [B], updated moving average of train reward
+        Tensor: shape=[B], updated moving average of train reward
     """
     batch_mean = rewards.mean().expand_as(rewards)  # [B]
     if mv_ave is not None:
@@ -80,8 +83,7 @@ def load_checkpoint(rank, device, args):
 
 
 def set_actor(rank, device, parallel, args, checkpoint):
-    actor = PolicyNetwork(dim_embed=args.dim_embed, n_heads=args.n_heads, n_layers_n=args.n_layers_n, n_layers_a=args.n_layers_a, norm_n=args.norm_n, norm_a=args.norm_a,
-                            tanh_clipping=args.tanh_clipping, dropout=args.dropout, target=args.target, device=device, n_agents=args.n_agents).to(device)
+    actor = PolicyNetwork(dim_embed=args.dim_embed, n_heads=args.n_head, tanh_clipping=args.tanh_clipping, dropout=args.dropout, target=args.target, device=device, n_agents=args.n_agents).to(device)
     if checkpoint:
         print('Loading actor checkpoint...\n')
         actor.load_state_dict(checkpoint["actor"])
@@ -91,8 +93,7 @@ def set_actor(rank, device, parallel, args, checkpoint):
     lr_scheduler = optim.lr_scheduler.LambdaLR(actor_optimizer, lambda epoch: args.lr_decay ** epoch)
     if checkpoint:
         actor_optimizer.load_state_dict(checkpoint["actor_opt"])
-        if args.start_epoch == int(os.path.basename(args.cp_path).split(".")[0]):
-            lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+        lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
     return actor, actor_optimizer, lr_scheduler
 
 
@@ -101,9 +102,9 @@ def set_baseline(parallel, actor, checkpoint):
     if checkpoint:
         print('Loading rollout baseline checkpoint...\n')
         if parallel:
+            # rename to use DDP baseline
             state_dict = {}
             for key, val in checkpoint["rollout_baseline"].items():
-                # rename to use DDP
                 state_dict["module." + key] = val
             baseline.load_state_dict(state_dict)
         else:
@@ -119,7 +120,7 @@ def check_update(device, args, actor_rewards, baseline_rewards):
         baseline_rewards (Tensor):  baseline rewards on rank0, shape=[ttest_samples]
         actor_rewards (Tensor): actor rewards on rank0, shape=[ttest_samples]
     Returns:
-        bool: if True, updating baseline is needed
+        Tensor: if True, updating baseline is needed
     """
     print('\n===== OneSidedPairedTTest =====\n')
     # paired t test
@@ -156,7 +157,7 @@ def save(parallel, save_dir, epoch, actor, actor_optimizer, lr_scheduler, baseli
 def validate(args, val_env, actor, n_agents, speed, max_load):
     """
     Returns:
-        val_reward_mean: [1](on each device)
+        (Tensor): mean of validaton rewards, on each device, shape=[1]
     """
     val_reward_list = []
     val_env.reindex()  # val_dataset is used repeatedly
@@ -172,8 +173,8 @@ def test(args, ttest_env, baseline, actor, n_custs, n_agents, speed, max_load):
     sample solutions greedily on the same instances by baseline and actor and return thier rewards
     Args:
     Returns:
-        baseline_rewards (Tensor): baseline rewards on each device, shape=[ttest_samples/world_size]
-        actor_rewards (Tensor): actor rewards on each device, shape=[ttest_samples/world_size]
+        Tensor: baseline rewards on each device, shape=[ttest_samples/world_size]
+        Tensor: actor rewards on each device, shape=[ttest_samples/world_size]
     """
     baseline_list = []
     actor_list = []
@@ -190,14 +191,14 @@ def test(args, ttest_env, baseline, actor, n_custs, n_agents, speed, max_load):
 
 def gather_rewards(rank, args, baseline_rewards, actor_rewards):
     """
-    gather test rewards on master device
+    gather test rewards on rank0
     Args:
         baseline_rewards (Tensor): baseline rewards on each device, shape=[ttest_samples/world_size]
         actor_rewards (Tensor): actor rewards on each device, shape=[ttest_samples/world_size]
     Returns:
         if rank == 0:
-            baseline_rewards (Tensor):  baseline rewards on rank0, shape=[ttest_samples]
-            actor_rewards (Tensor): actor rewards on rank0, shape=[ttest_samples]
+            Tensor:  baseline rewards on rank0, shape=[ttest_samples]
+            Tensor: actor rewards on rank0, shape=[ttest_samples]
         else:
             None
             None
@@ -222,7 +223,7 @@ def train_dist(rank, args, parallel, logger, cp_dir):
     device = torch.device("cpu") if (args.no_gpu or not torch.cuda.is_available()) else torch.device('cuda', rank)
     print(f"{rank}: Running train_dist on device {device}.")
     if parallel:
-        setup(rank, args.world_size, args)
+        setup_mp(rank, args.world_size, args)
 
     torch.manual_seed(args.seed + rank)
 
@@ -242,7 +243,7 @@ def train_dist(rank, args, parallel, logger, cp_dir):
     for epoch in range(args.start_epoch + 1, args.end_epoch + 1):
         # calc offset
         step = (epoch - 1) * args.train_batches
-        # train data is generated on the fly
+        # generate train data on the fly
         train_env.make_maps(args.n_custs, args.max_demand)
 
         if rank == 0:
@@ -250,12 +251,12 @@ def train_dist(rank, args, parallel, logger, cp_dir):
         while(train_env.next()):
             step += 1
             # execute actor
-            sum_logprobs, train_rewards,  _ = execute_routing(args, train_env, actor, args.n_agents, args.speed, args.load, test=False)
+            sum_logprobs, train_rewards, _ = execute_routing(args, train_env, actor, args.n_agents, args.speed, args.load, test=False)
             train_reward_mean = train_rewards.mean()
             
             # execute baseline
             if epoch == 1:
-                # moving average of training reward is used instead of rollout baseline at initial epoch
+                # at initial epoch, moving average of training reward is used instead of rollout baseline 
                 bl_rewards = calc_ave(args, train_rewards, bl_rewards)
             else:
                 _, bl_rewards, _ = execute_routing(args, train_env, baseline, args.n_agents, args.speed, args.load, test=True)
@@ -279,11 +280,11 @@ def train_dist(rank, args, parallel, logger, cp_dir):
                     dist.reduce(val_reward_mean, dst=0, op=dist.ReduceOp.SUM)
                 if rank == 0:
                     # output log in rank0
-                    sample = step * args.train_batch_size
+                    num_trained_instance = step * args.train_batch_size
                     train_reward_mean = (train_reward_mean / args.world_size).cpu().item()
                     actor_loss = (actor_loss / args.world_size).cpu().item()
                     val_reward_mean = (val_reward_mean / args.world_size).cpu().item()
-                    logger.add_vals(epoch, step, lr_scheduler.get_last_lr()[0], sample, train_reward_mean, actor_loss, val_reward_mean)
+                    logger.add_vals(epoch, step, lr_scheduler.get_last_lr()[0], num_trained_instance, train_reward_mean, actor_loss, val_reward_mean)
                     logger.output()
                 if parallel:
                     dist.barrier()
@@ -303,7 +304,7 @@ def train_dist(rank, args, parallel, logger, cp_dir):
             # conduct TTest on rank0
             needs_update = check_update(device, args, actor_rewards.cpu().numpy(), baseline_rewards.cpu().numpy())
         else:
-            # flag to use to receice broadcasted flag
+            # used to receice broadcasted flag
             needs_update = torch.tensor(True, device=device, dtype=torch.bool)
         if parallel:
             # broadcast TTest results to all devices
@@ -322,7 +323,7 @@ def train_dist(rank, args, parallel, logger, cp_dir):
     if rank == 0:
         logger.close()
     if parallel:
-        cleanup()
+        cleanup_mp()
 
 
 def main(args):

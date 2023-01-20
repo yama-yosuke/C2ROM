@@ -41,17 +41,17 @@ class PolicyNetwork(nn.Module):
         """
         Precomute fixed data(node encoder)
         Args:
-            node (Tensor): holding all node attributes(x, y, demand*), shape=[calcB, 3, n_nodes]
+            node (Tensor): holding all node attributes(x, y, demand*), shape=[B, 3, n_nodes]
         """
-        # [calcB, dim_embed, n_nodes]
+        # [B, dim_embed, n_nodes]
         node_embed = self.mha_n(
             torch.cat((self.embedder_depot(node[:, :2, 0].unsqueeze(-1)), self.embedder_node(node[:, :, 1:])), dim=-1)
         )
-        # [calcB, dim_embed, 1]
+        # [B, dim_embed, 1]
         depot_embed = node_embed[:, :, 0].unsqueeze(2)
-        # [calcB, 3*dim_embed, n_nodes]
+        # [B, 3*dim_embed, n_nodes]
         memory = self.project_memory(node_embed)
-        # [calcB, dim_embed, 1]
+        # [B, dim_embed, 1]
         graph_embed = self.project_graph(node_embed.mean(dim=2, keepdim=True))
 
         fixed = {
@@ -65,18 +65,18 @@ class PolicyNetwork(nn.Module):
     def calc_mrt(self, location, position, remaining_time, speed):
         """
         Args:
-            location: [calcB, n_nodes, 2]
-            position: [calcB, n_agents]
-            remaining_time: [calcB, n_agents]
-            speed: [calcB, n_agents]
+            location: [B, n_nodes, 2]
+            position: [B, n_agents]
+            remaining_time: [B, n_agents]
+            speed: [B, n_agents]
         Returns:
-            min_reah_time(time): [calcB, n_agents, n_nodes]
+            min_reah_time(time): [B, n_agents, n_nodes]
         """
-        # [calcB, n_agents, 1, 2] destination coordinates of agents
+        # [B, n_agents, 1, 2] destination coordinates of agents
         agent_loc = torch.gather(location, 1, position.unsqueeze(2).expand(-1, -1, 2)).unsqueeze(2)
-        # [calcB, 1, n_nodes, 2] coordinates of nodes
+        # [B, 1, n_nodes, 2] coordinates of nodes
         node_loc = location.unsqueeze(1)
-        # [calcB, n_agents, n_nodes]
+        # [B, n_agents, n_nodes]
         dist = (agent_loc - node_loc).pow(2).sum(3).sqrt()
         remaining_time[remaining_time == -1] = float("inf")  # OOS agent
         min_reach_time = (dist / speed.unsqueeze(2)) + remaining_time.unsqueeze(2)
@@ -101,20 +101,20 @@ class PolicyNetwork(nn.Module):
         """
         execute fleet encoder and decoder
         Returns:
-            logprob: [calcB, n_nodes]
+            logprob: [B, n_nodes]
         """
         # fleet encoder
 
         # vehicle context vector
-        # [calcB, 1], current pos
+        # [B, 1], current pos
         agent_pos = torch.gather(dynamic["position"], dim=1, index=dynamic["next_agent"])
-        # [calcB, dim_embed, 1]
+        # [B, dim_embed, 1]
         agent_dest = torch.gather(input=fixed["node_embed"].repeat(rep, 1, 1), dim=2, index=agent_pos.unsqueeze(1).expand(-1, fixed["node_embed"].size(1), -1))
-        # [calcB, 1, 1]
+        # [B, 1, 1]
         agent_load = torch.gather(input=dynamic["load"], dim=1, index=dynamic["next_agent"]).unsqueeze(2)
-        # [calcB, 1, 1]
+        # [B, 1, 1]
         agent_max_load = torch.gather(input=static["max_load"], dim=1, index=dynamic["next_agent"]).unsqueeze(2)
-        # [calcB, 1, 1]
+        # [B, 1, 1]
         agent_speed = torch.gather(input=static["speed"], dim=1, index=dynamic["next_agent"]).unsqueeze(2)
         agent_input = torch.cat((
             agent_dest.detach(),
@@ -124,34 +124,34 @@ class PolicyNetwork(nn.Module):
         )
 
         # interpretatve node feature
-        # [calcB, n_agents, n_nodes]
+        # [B, n_agents, n_nodes]
         demand_rel = dynamic["demand"].unsqueeze(1) / dynamic["load"].unsqueeze(2)
         demand_rel[demand_rel > 1.0] = -1.0  # set -1 to unsatisfiable node
         demand_rel.nan_to_num_()  # convert "nan" to 0 in case load=demand=0
-        # [calcB, n_agents, n_nodes]
+        # [B, n_agents, n_nodes]
         min_reach_time = self.calc_mrt(static["location"], dynamic["position"], dynamic["remaining_time"], static["speed"])
 
-        # [calcB], 2*n_agents, n_nodes]
+        # [B], 2*n_agents, n_nodes]
         interpret_feature_ = torch.cat((
             demand_rel,
             min_reach_time,
         ), dim=1
         )
 
-        # [calcB, 2*n_agents, n_nodes]
+        # [B, 2*n_agents, n_nodes]
         interpret_feature = self.sort(interpret_feature_, dynamic["next_agent"], self.n_agents)
         interpret_embed = self.mha_n_active(self.embedder_fleet(interpret_feature))
         
         # decoder
-        # [calcB, dim_embed, n_nodes] for each
+        # [B, dim_embed, n_nodes] for each
         glimpse_key, glimpse_val, logit_key = (fixed["memory"].repeat(rep, 1, 1) + self.project_memory_active(interpret_embed)).chunk(3, dim=1)
 
-        # context embedding, [calcB, dim_embed, 1]
+        # context embedding, [B, dim_embed, 1]
         context = fixed["depot_embed"].repeat(rep, 1, 1) + fixed["graph_embed"].repeat(rep, 1, 1) + self.project_context(agent_input)
         # [B, dim_embed, 1], next_agent
         glimse_q = self.project_glimpse(simpleMHA(context, glimpse_key, glimpse_val, self.n_heads))
 
-        # [calcB, n_nodes]
+        # [B, n_nodes]
         logits = torch.bmm(logit_key.permute(0, 2, 1), glimse_q).squeeze(2) / math.sqrt(glimse_q.size(1))
         if self.tanh_clipping > 0:
             logits = torch.tanh(logits) * self.tanh_clipping
@@ -162,9 +162,9 @@ class PolicyNetwork(nn.Module):
     def forward(self, args, env, n_agents, speed, max_load, sampling=False, rep=1):
         """
         Returns:
-            sum_logprobs (Tensor): sum of log probability for selected action, shpae=[calcB]
-            rewards (Tensor): shape=[calcB]
-            routes (list): sequence of node index in visited order, shape=[calcB, n_agents, n_visits]
+            sum_logprobs (Tensor): sum of log probability for selected action, shpae=[B]
+            rewards (Tensor): shape=[B]
+            routes (list): sequence of node index in visited order, shape=[B, n_agents, n_visits]
         """
         # RESET ENVIRONMENT
         static, dynamic, mask = env.init_deploy(n_agents, speed, max_load)
@@ -177,52 +177,52 @@ class PolicyNetwork(nn.Module):
         logprobs = []
         additinal_distances = []
         while not dynamic["done"].all():
-            # [calcB, n_nodes]
+            # [B, n_nodes]
             logprob = self.sample_step(static, dynamic, mask, fixed, rep)
             if self.training or sampling:
                 prob_dist = torch.distributions.Categorical(logprob.exp())
-                # [calcB]
+                # [B]
                 action = prob_dist.sample()  # Stochastic policy
             else:
-                # [calcB]
+                # [B]
                 action = torch.argmax(logprob, 1)  # Greedy policy
             
-            logprob_selected = torch.gather(logprob, dim=1, index=action.unsqueeze(1))  # [calcB, 1]
+            logprob_selected = torch.gather(logprob, dim=1, index=action.unsqueeze(1))  # [B, 1]
             agent_id = dynamic["next_agent"]  # before env.step
             done = dynamic["done"]
 
-            action_cp = action.clone().detach()  # [calcB]
+            action_cp = action.clone().detach()  # [B]
 
             dynamic, mask, additional_distance_oh = env.step(action_cp.unsqueeze(1))
             # APPEND RESULTS
-            action_cp[done.squeeze(1)] = -1  # set terminated episode to -1 [calcB]
-            # target = [calcB, n_agents], index=[B, 1], src=[B, 1]
-            # [calcB, n_agents], set next node index to active vehciel, set -1 to other vehicles
+            action_cp[done.squeeze(1)] = -1  # set terminated episode to -1 [B]
+            # target = [B, n_agents], index=[B, 1], src=[B, 1]
+            # [B, n_agents], set next node index to active vehciel, set -1 to other vehicles
             action_agent_wise = torch.scatter(torch.full((static["batch_size"]*rep, static["n_agents"]), -1, device=self.device),
                                               dim=1, index=agent_id, src=action_cp.unsqueeze(1))
-            actions.append(action_agent_wise)  # list of [calcB, n_agents]
+            actions.append(action_agent_wise)  # list of [B, n_agents]
             logprobs.append(logprob_selected)
-            # additional_distance: [calcB, n_agents]
+            # additional_distance: [B, n_agents]
             additinal_distances.append(additional_distance_oh)
         # PROCESS RESULTS
-        # [calcB]
+        # [B]
         sum_logprobs = torch.cat(logprobs, 1).sum(1)
-        # [calcB, n_agents]
+        # [B, n_agents]
         total_distance = torch.stack(additinal_distances, 1).sum(1).squeeze(1)
-        # [calcB, n_agents]
+        # [B, n_agents]
         total_time = total_distance / static["speed"]
         if args.target == "MS":
-            rewards = total_time.sum(1)  # [calcB]
+            rewards = total_time.sum(1)  # [B]
         else:
             # min-max
-            rewards, _ = total_time.max(1)  # [calcB]
+            rewards, _ = total_time.max(1)  # [B]
 
-        # [calcB, n_agents, n_actions]
+        # [B, n_agents, n_actions]
         routes = torch.stack(actions, 2).cpu()
-        # [calcB, n_agents, 1 + n_actions], add starting point(depot)
+        # [B, n_agents, 1 + n_actions], add starting point(depot)
         routes = torch.cat((torch.zeros_like(dynamic["position"], device=torch.device("cpu")).unsqueeze(2), routes), 2).tolist()
         # i=each batch, j=each agent, k=each action(position)
-        # routes = list of [calcB, n_agents, n_visits]
+        # routes = list of [B, n_agents, n_visits]
         routes = [[[k for k in j if k != -1] for j in i] for i in routes]
 
         return sum_logprobs, rewards, routes
