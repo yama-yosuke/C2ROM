@@ -1,6 +1,5 @@
 import argparse
 import torch
-import os
 from const import SPEED, MAX_LOAD
 
 
@@ -18,8 +17,6 @@ def get_options():
     # Actor parameters
     parser.add_argument("--n_heads", type=int, default=8, help="number of heads in MHA")
     parser.add_argument("--dim_embed", type=int, default=128, help="embedding dimension")
-    parser.add_argument("--norm_n", type=str, default="batch", choices=["batch", "instance", "None"], help="Normalization in MHA in Node encoder")
-    parser.add_argument("--norm_a", type=str, default="None", choices=["batch", "instance", "None"], help="Normalization in MHA in Fleet Encoder")
 
     # Baseline parameters
     parser.add_argument("--mv_beta", type=float, default=0.8, help="weight to calculate moving average(only used in initial epoch")
@@ -57,11 +54,11 @@ def get_options():
         args.world_size = torch.cuda.device_count()
 
     # learning parameters
-    assert args.train_instance_num % args.train_batch_size == 0, "train_samples is not divisible by batch_size"
-    assert args.val_instance_num % args.val_batch_size == 0, "val_samples is not divisible by batch_size"
-    args.train_batches = args.train_instance_num // args.train_batch_size
+    assert args.train_instance_num % args.train_batch_size == 0
+    assert args.val_instance_num % args.val_batch_size == 0
+    args.train_batch_num = args.train_instance_num // args.train_batch_size
     if args.log_interval == -1:
-        args.log_interval = int(args.train_batches / 5)
+        args.log_interval = int(args.train_batch_num / 5)
 
     args.title = 'V{}-C{}-{}'.format(args.n_agents, args.n_custs, args.target)
     if args.speed_type == "het":

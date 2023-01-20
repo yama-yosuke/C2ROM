@@ -30,17 +30,17 @@ def simpleMHA(q, k, v, num_heads=8):
     """
     batch, dim_embed, _ = q.shape
     dim_part = int(dim_embed / num_heads)
-    q_ = q.view(batch, num_heads, dim_part, -1).permute(1, 0, 3, 2)  # [heads, batch, L, dim_part]
-    k_ = k.view(batch, num_heads, dim_part, -1).permute(1, 0, 2, 3)  # [heads, batch, dim_part, S]
-    v_ = v.view(batch, num_heads, dim_part, -1).permute(1, 0, 3, 2)  # [heads, batch, S, dim_part]
+    q_ = q.view(batch, num_heads, dim_part, -1).permute(1, 0, 3, 2)  # [heads, B, L, dim_part]
+    k_ = k.view(batch, num_heads, dim_part, -1).permute(1, 0, 2, 3)  # [heads, B, dim_part, S]
+    v_ = v.view(batch, num_heads, dim_part, -1).permute(1, 0, 3, 2)  # [heads, B, S, dim_part]
 
-    # [heads, batch, L, dim_part] * [heads, batch, dim_part, S] = (heads, batch, L, S]
+    # [heads, B, L, dim_part] * [heads, B, dim_part, S] = (heads, B, L, S]
     compatibility = torch.matmul(q_, k_) / math.sqrt(q_.size(-1))
 
-    # [heads, batch, L, S] * [heads, batch, S, dim_part] = [heads, batch, L, dim_part]
+    # [heads, B, L, S] * [heads, B, S, dim_part] = [heads, B, L, dim_part]
     partial_out = torch.matmul(torch.softmax(compatibility, dim=-1), v_)
 
-    # [batch, dim_embed, L]
+    # [B, dim_embed, L]
     out = partial_out.permute(1, 0, 3, 2).contiguous().view(batch, dim_embed, -1)
 
     return out
@@ -49,25 +49,21 @@ def simpleMHA(q, k, v, num_heads=8):
 class MHA(nn.Module):
     """
     MultiHeadAttention(q, k, v) = qk^T/(d_k)^0.5 * v
-    qとkのcompatibility([L, S])に応じて、vの情報を取り込む。出力サイズはq
     """
 
     def __init__(self, dim_embed, n_heads, norm, dropout):
         """
         Args:
-            dim_embed: 埋め込み次元
-            n_heads: MHAのヘッド数
-            norm: のNormalization(batch, layer, instance or None)
+            dim_embed
+            norm: Normalization to use(batch, instance or None)
             dropout: droput ratio
         """
         super(MHA, self).__init__()
         # batch_frist=True → input=[B, seq, feature]
         self.mha = nn.MultiheadAttention(dim_embed, n_heads, batch_first=True, dropout=dropout)
         if norm == "batch":
-            # dim_embedの各次元について、Batch*num_elementで正規化
-            self.bn = nn.BatchNorm1d(dim_embed, affine=True, track_running_stats=True)  # Falseにするとテストの精度向上
+            self.bn = nn.BatchNorm1d(dim_embed, affine=True, track_running_stats=True)
         elif norm == "instance":
-            # dim_embedの各次元について、num_element(agent数、node数)で正規化
             self.bn = nn.InstanceNorm1d(dim_embed, affine=True, track_running_stats=False)
         else:
             self.bn = None
@@ -88,26 +84,20 @@ class MHA(nn.Module):
 
 
 class FF(nn.Module):
-    """
-    3層NN
-    """
-
     def __init__(self, dim_embed, norm, hidden_dim):
         """
         Args:
-            dim_embed: 埋め込み次元
-            norm: のNormalization(batch, layer, instance or None)
-            hidden_dim: FFの隠れ層の次元  
+            dim_embed:
+            norm: Normalization to use(batch, instance or None)
+            hidden_dim 
         """
         super(FF, self).__init__()
         self.affine1 = Embedder(dim_embed, hidden_dim)  # 32 is arbitrary
         self.relu = nn.ReLU()
         self.affine2 = Embedder(hidden_dim, dim_embed, bias=False)  # BatchNormにbias項があるので
         if norm == "batch":
-            # dim_embedの各次元について、Batch*num_elementで正規化
-            self.bn = nn.BatchNorm1d(dim_embed, affine=True, track_running_stats=True)  # Falseにするとテストの精度向上
+            self.bn = nn.BatchNorm1d(dim_embed, affine=True, track_running_stats=True)
         elif norm == "instance":
-            # dim_embedの各次元について、num_element(agent数、node数)で正規化
             self.bn = nn.InstanceNorm1d(dim_embed, affine=True, track_running_stats=False)
         else:
             self.bn = None
@@ -135,11 +125,11 @@ class SelfAttentionLayer(nn.Module):
     def __init__(self, dim_embed, n_heads, norm, dropout, hidden_dim):
         """
         Args:
-            dim_embed: 埋め込み次元
-            n_heads: MHAのヘッド数
-            norm: のNormalization(batch, layer, instance or None)
+            dim_embed:
+            n_heads:
+            norm: Normalization to use(batch, instance or None)
             dropout: droput ratio
-            hidden_dim: FFの隠れ層の次元  
+            hidden_dim:
         """
         super(SelfAttentionLayer, self).__init__()
         self.mha = MHA(dim_embed, n_heads, norm, dropout)
@@ -165,12 +155,12 @@ class SelfAttention(nn.Module):
     def __init__(self, dim_embed, n_heads, n_layers, norm, dropout, hidden_dim):
         """
         Args:
-            dim_embed: 埋め込み次元
-            n_heads: MHAのヘッド数
-            n_layers: SelfAttentionのlayer数
-            norm: のNormalization(batch, layer, instance or None)
+            dim_embed:
+            n_heads:
+            n_layers: number of layers
+            norm: Normalization to use(batch, instance or None)
             dropout: droput ratio
-            hidden_dim: FFの隠れ層の次元  
+            hidden_dim:
         """
         super(SelfAttention, self).__init__()
         layers = [SelfAttentionLayer(dim_embed, n_heads, norm, dropout, hidden_dim) for _ in range(n_layers)]
@@ -181,36 +171,3 @@ class SelfAttention(nn.Module):
         q = self.layers(q)
         return q
 
-
-class AttentionLayer(nn.Module):
-    """
-    nn.Sequential accepts only one argument, so defined separately
-    Attention + FF
-    h_mha = BN(q + Attention(q, k, v))
-    h_ff = BN(h_mha + FN(h_mha))
-    """
-
-    def __init__(self, dim_embed, n_heads, norm, dropout, hidden_dim):
-        """
-        Args:
-            dim_embed: 埋め込み次元
-            n_heads: MHAのヘッド数
-            norm: のNormalization(batch, layer, instance or None)
-            dropout: droput ratio
-            hidden_dim: FFの隠れ層の次元  
-        """
-        super(AttentionLayer, self).__init__()
-        self.mha = MHA(dim_embed, n_heads, norm, dropout)
-        self.ff = FF(dim_embed, norm, hidden_dim)
-
-    def forward(self, q, k, v, attn_mask=None, key_padding_mask=None):
-        """
-        Args:
-            q: [B, dim_embed, L]
-            k, v : [B, dim_embed, S]
-        Returns:
-            h_mha: [B, dim_embed, L]
-        """
-        h_mha = self.mha(q, k, v, attn_mask, key_padding_mask)
-        h_ff = self.ff(h_mha)
-        return h_ff

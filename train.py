@@ -9,7 +9,6 @@ from tqdm import tqdm
 from models.models import PolicyNetwork
 from env import Env
 from utils import Logger
-import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -242,12 +241,12 @@ def train_dist(rank, args, parallel, logger, cp_dir):
     # start training
     for epoch in range(args.start_epoch + 1, args.end_epoch + 1):
         # calc offset
-        step = (epoch - 1) * args.train_batches
+        step = (epoch - 1) * args.train_batch_num
         # generate train data on the fly
         train_env.make_maps(args.n_custs, args.max_demand)
 
         if rank == 0:
-            pbar = tqdm(total=args.train_batches)
+            pbar = tqdm(total=args.train_batch_num)
         while(train_env.next()):
             step += 1
             # execute actor

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 import math
 
-from models.modules import Embedder, simpleMHA, SelfAttention, AttentionLayer, MHA
+from models.modules import Embedder, simpleMHA, SelfAttention
 
 class PolicyNetwork(nn.Module):
     def __init__(self, dim_embed, n_heads, tanh_clipping, dropout, target, device, hidden_dim=512, n_agents=3):
@@ -29,8 +29,8 @@ class PolicyNetwork(nn.Module):
         self.mha_fleet = SelfAttention(dim_embed, n_heads, 1, "None", dropout, hidden_dim)
 
         # decoder
-        self.project_memory = Embedder(dim_embed, 3 * dim_embed)  # memory embedding
-        self.project_memory_active = Embedder(dim_embed, 3 * dim_embed)
+        self.project_memory_node = Embedder(dim_embed, 3 * dim_embed)  # memory embedding
+        self.project_memory_fleet = Embedder(dim_embed, 3 * dim_embed)
         self.project_glimpse = Embedder(dim_embed, dim_embed)
         
         for p in self.parameters():
@@ -44,13 +44,13 @@ class PolicyNetwork(nn.Module):
             node (Tensor): holding all node attributes(x, y, demand*), shape=[B, 3, n_nodes]
         """
         # [B, dim_embed, n_nodes]
-        node_embed = self.mha_n(
+        node_embed = self.mha_node(
             torch.cat((self.embedder_depot(node[:, :2, 0].unsqueeze(-1)), self.embedder_node(node[:, :, 1:])), dim=-1)
         )
         # [B, dim_embed, 1]
         depot_embed = node_embed[:, :, 0].unsqueeze(2)
         # [B, 3*dim_embed, n_nodes]
-        memory = self.project_memory(node_embed)
+        memory = self.project_memory_node(node_embed)
         # [B, dim_embed, 1]
         graph_embed = self.project_graph(node_embed.mean(dim=2, keepdim=True))
 
@@ -140,11 +140,11 @@ class PolicyNetwork(nn.Module):
 
         # [B, 2*n_agents, n_nodes]
         interpret_feature = self.sort(interpret_feature_, dynamic["next_agent"], self.n_agents)
-        interpret_embed = self.mha_n_active(self.embedder_fleet(interpret_feature))
+        interpret_embed = self.mha_fleet(self.embedder_fleet(interpret_feature))
         
         # decoder
         # [B, dim_embed, n_nodes] for each
-        glimpse_key, glimpse_val, logit_key = (fixed["memory"].repeat(rep, 1, 1) + self.project_memory_active(interpret_embed)).chunk(3, dim=1)
+        glimpse_key, glimpse_val, logit_key = (fixed["memory"].repeat(rep, 1, 1) + self.project_memory_fleet(interpret_embed)).chunk(3, dim=1)
 
         # context embedding, [B, dim_embed, 1]
         context = fixed["depot_embed"].repeat(rep, 1, 1) + fixed["graph_embed"].repeat(rep, 1, 1) + self.project_context(agent_input)
