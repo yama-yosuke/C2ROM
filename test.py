@@ -18,6 +18,8 @@ from const import SPEED, MAX_LOAD
 def get_options():
     parser = argparse.ArgumentParser(description="Test C2ROM")
 
+    parser.add_argument("actor_path", type=str, default=None, help="path to model parameter")
+
     # Environment parameters
     parser.add_argument("--n_custs", type=int, default=None, help="size of customers")
     parser.add_argument("--n_sampling", type=int, default=1, help="size of sampling")
@@ -120,7 +122,7 @@ def test(args, actor, n_agents, n_custs, speed, max_load, img_path):
     print(f'Test: V{n_agents}-C{n_custs}')
     # initialize env
     # test_env
-    test_env = Env(rank=0, device=args.device, world_size=1, sample_num=args.instance_num, global_batch_size=args.batch_size, rep=args.n_sampling)
+    test_env = Env(rank=0, device=args.device, world_size=1, instance_num=args.instance_num, global_batch_size=args.batch_size, rep=args.n_sampling)
     test_env.load_maps(n_custs, args.max_demand, "test", args.seed)
 
     rewards_list = []
