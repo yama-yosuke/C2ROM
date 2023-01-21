@@ -18,19 +18,19 @@ python make_test_dataset.py
 ```
 
 ### Train
-With single GPU(ex. V5-C80):
+With a single GPU(ex. V5-C80):
 ```
-python train.py --n_custs 80 --n_agents 5
+CUDA_VISIBLE_DEVICES=0 python train.py --n_custs 80 --n_agents 5
 ```
 With multiple GPUs(ex. with 2 GPUs):
 ```
-CUDA_VISIBLE_DEVICES=0, 1 python train.py --n_custs 80 --n_agents 5
+CUDA_VISIBLE_DEVICES=0,1 python train.py --n_custs 80 --n_agents 5
 ```
 For more detailed options:
 ```
 python train.py --help
 ```
-Training log(.csv) and checkpoint file(.pt) are output to "Results/problem name/execution time"
+Training log(.csv) and checkpoint file(.pt) are output under the directory: "Results/problem name/execution time"
 
 ### Test
 To test greedy strategy:
