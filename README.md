@@ -30,7 +30,7 @@ For more detailed options:
 ```
 python train.py --help
 ```
-Training log(.csv) and checkpoint file(.pt) are output under the directory: "Results/problem name/execution time"
+Training log(.csv) and checkpoint file(.pt) are output under the directory: "Results/{problem name}/{execution time}"
 
 ### Test
 To test greedy strategy:
@@ -45,3 +45,4 @@ To test generalization ability(ex. with 1000 customers):
 ```
 python test.py path/to/hoge.pt --n_custs 1000
 ```
+Test result is output under the directory: "Results/{problem name}/{execution time}/test_e{epoch}"
