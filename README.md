@@ -1,47 +1,47 @@
-# Dependencies
+# C2ROM
+Pytorch implementation of "A Chronological and Cooperative Route Optimization Method for Heterogeneous Vehicle Routing Problem"
+
+## Dependencies
 - Python>=3.8
 - NumPy
 - SciPy
 - Pytorch=1.12
 - tqdm
 - Matplotlib
-- wandb(optional)
 
-# Usage
-## Generating data
-Training data is generated on the fly. Generate validation and test data:
+## Usage
+### Generate data
+Before start training or test, generate validation and test data.(Training data is generated on the fly.) :
 ```
 python make_val_dataset.py
 python make_test_dataset.py
 ```
 
-## Training
-With single GPU:
+### Train
+With single GPU(ex. V5-C80):
 ```
-python train.py --n_custs 40 --n_agents 5
+python train.py --n_custs 80 --n_agents 5
 ```
-With multi GPUs(When limiting to 2 GPUs):
+With multiple GPUs(ex. with 2 GPUs):
 ```
-CUDA_VISIBLE_DEVICES=0, 1 python train.py --n_custs 40 --n_agents 5
+CUDA_VISIBLE_DEVICES=0, 1 python train.py --n_custs 80 --n_agents 5
 ```
-See options.py for more detailed option.
+For more detailed options:
+```
+python train.py --help
+```
+Training log(.csv) and checkpoint file(.pt) are output to "Results/problem name/execution time"
 
-## Test
-To get the best model of all epochs:
-```
-python test_all.py path/to/checkpoints
-```
-To test specified model(greedy):
+### Test
+To test greedy strategy:
 ```
 python test.py path/to/hoge.pt
 ```
-To test specified model(sampling 1280):
+To test sampling strategy(ex. with 1280 samples):
 ```
 python test.py path/to/hoge.pt --n_sampling 1280
 ```
-To test specified model on all customers(greedy):
+To test generalization ability(ex. with 1000 customers):
 ```
-python test.py path/to/hoge.pt --all_cust
+python test.py path/to/hoge.pt --n_custs 1000
 ```
-If Memory allocation error occurs, decrease the value of `--batch_size`  
-See test.py for detailed option.
