@@ -1,6 +1,5 @@
 import torch
 import os
-import logging
 
 
 class Env(object):
@@ -20,25 +19,25 @@ class Env(object):
         self.device = device
         self.world_size = world_size
         self.instance_num = instance_num
-        self.rep = rep  # for sampling
-        self.global_batch_size = global_batch_size  # globalB
-        assert instance_num % global_batch_size == 0, "instance_num cannnot be divided by batch_size"
-        self.batch_num = instance_num // global_batch_size  # number of batches per iterarion(same in all devices)
+        self.rep = rep  # instance repetition for sampling
+        self.global_batch_size = global_batch_size  # globalB, batch size processed by the all device
+        assert instance_num % global_batch_size == 0, "instance_num cannnot be divided by global_batch_size"
+        self.batch_num = instance_num // global_batch_size  # number of batches per iterarion(same for all devices)
         # calculate batch size on each device(localB)
         self.fraction = global_batch_size % world_size
-        self.batch_size = ((global_batch_size // world_size) + self.fraction) if rank == 0 else (global_batch_size // world_size)  # localB
-        self.calc_batch_size = self.batch_size * rep  # batch size for each device including repetition for sampling, # B
+        self.local_batch_size = ((global_batch_size // world_size) + self.fraction) if rank == 0 else (global_batch_size // world_size)  # localB
+        self.batch_size = self.local_batch_size * rep  # batch size for each device including repetition for sampling, # B
         
 
     def make_maps(self, n_custs, max_demand):
         self.n_nodes = n_custs + 1
         self.max_demand = max_demand
-        init_demand = (torch.FloatTensor(self.batch_num, self.batch_size, self.n_nodes).uniform_(0, self.max_demand).int() + 1).float()
+        init_demand = (torch.FloatTensor(self.batch_num, self.local_batch_size, self.n_nodes).uniform_(0, self.max_demand).int() + 1).float()
         init_demand[:, :, 0] = 0  # demand of depot is 0
         # on CPU
         self.dataset = {
-            # [batch_num, localB(batch size in a device), n_nodes, 2]
-            "location": torch.FloatTensor(self.batch_num, self.batch_size, self.n_nodes, 2).uniform_(0, 1),
+            # [batch_num, localB, n_nodes, 2]
+            "location": torch.FloatTensor(self.batch_num, self.local_batch_size, self.n_nodes, 2).uniform_(0, 1),
             # [batch_num, localB, n_nodes]
             "init_demand": init_demand
         }
@@ -54,16 +53,15 @@ class Env(object):
         load_data = torch.load(load_path)
         if self.rank == 0:
             idx_from = 0
-            idx_to = self.batch_size
+            idx_to = self.local_batch_size
         else:
-            idx_from = self.fraction + self.batch_size * self.rank
-            idx_to = self.fraction + self.batch_size * (self.rank + 1)
+            idx_from = self.fraction + self.local_batch_size * self.rank
+            idx_to = self.fraction + self.local_batch_size * (self.rank + 1)
         # on CPU
-        logging.info(f"Process {self.rank}: Batch index={idx_from}-{idx_to}")
         self.dataset = {
-            # [instance_num, n_nodes, 2] -> [batch_num, globalB, n_nodes, 2] -> [batch_num, B, n_nodes, 2]
+            # [instance_num, n_nodes, 2] -> [batch_num, globalB, n_nodes, 2] -> [batch_num, localB, n_nodes, 2]
             "location": load_data["location"].reshape(self.batch_num, -1, self.n_nodes, 2)[:, idx_from:idx_to],
-            # [instance_num, n_nodes] -> [batch_num, globalB, n_nodes] -> [batch_num, B, n_nodes]
+            # [instance_num, n_nodes] -> [batch_num, globalB, n_nodes] -> [batch_num, localB, n_nodes]
             "init_demand": load_data["init_demand"].reshape(self.batch_num, -1, self.n_nodes)[:, idx_from:idx_to]
         }
 
@@ -76,7 +74,7 @@ class Env(object):
         """
         get next batch data
         Returns:
-            True if next data exists, else False
+            bool: True if next data exists, else False
         """
         if self.index == self.batch_num:
             return False
@@ -94,23 +92,24 @@ class Env(object):
             max_load:
             agent_id (int): the first agent to move
         Retruns:
-            static["batch_size"] (int): 
-            static["n_nodes"] (int):
-            staitc["n_agents"] (int):
-            static["location"] (Tensor): location of nodes, shape=[B, n_nodes, 2]
-            static["max_load"] (Tensor) : max load of agents(normalized), shape=[B, n_agents]
-            static["speed"] (Tensor) : speed, shape=[B, n_agents]
-            static["init_demand] (Tensor): initial demand(normalized), shape=[B, n_nodes]
-
-            dynamic["next_agent"] (Tensor): next agent, shape=[B, 1]
-            dynamic["position"] (Tensor): position(node index) of agent, shape=[B, n_agents]
-            dynamic["remaining_time"] (Tensor): remainingtime, shape=[B, n_agents]
-            dynamic["load"] (Tensor): load(normalized), shape=[B, n_agents]
-            dynamic["demand] (Tensor): current demand, shape=[B, n_nodes]
-            dynamic["current_time"] (Tensor): current time(init=0), shape=[B, 1]
-            dynamic["done"] (Tensor): done(init=False), shape=[B, 1]
-
-            mask (Tensor): (init=1), shape=[B, n_nodes]
+            dict:
+                static["local_batch_size"] (int)
+                static["n_nodes"] (int):
+                staitc["n_agents"] (int):
+                static["location"] (Tensor): location of nodes, shape=[B, n_nodes, 2]
+                static["max_load"] (Tensor) : max load of agents(normalized), shape=[B, n_agents]
+                static["speed"] (Tensor) : speed, shape=[B, n_agents]
+                static["init_demand] (Tensor): initial demand(normalized), shape=[B, n_nodes]
+            dict:
+                dynamic["next_agent"] (Tensor): next agent, shape=[B, 1]
+                dynamic["position"] (Tensor): position(node index) of agent, shape=[B, n_agents]
+                dynamic["remaining_time"] (Tensor): remainingtime, shape=[B, n_agents]
+                dynamic["load"] (Tensor): load(normalized), shape=[B, n_agents]
+                dynamic["demand] (Tensor): current demand, shape=[B, n_nodes]
+                dynamic["current_time"] (Tensor): current time(init=0), shape=[B, 1]
+                dynamic["done"] (Tensor): done(init=False), shape=[B, 1]
+            
+            Tensor: mask for infeasible action, shape=[B, n_nodes]
         """
         # agent settings
         self.n_agents = n_agents
@@ -118,25 +117,25 @@ class Env(object):
 
         # on CUDA
         # static
-        self.speed = torch.tensor(speed, device=self.device).expand(self.calc_batch_size, -1)
-        self.max_load = torch.tensor(max_load, device=self.device).expand(self.calc_batch_size, -1) / base_of_norm
+        self.speed = torch.tensor(speed, device=self.device).expand(self.batch_size, -1)
+        self.max_load = torch.tensor(max_load, device=self.device).expand(self.batch_size, -1) / base_of_norm
         self.init_demand = (self.init_demand_ori / base_of_norm).to(self.device)
 
         # dynamic
-        self.next_agent = torch.full((self.calc_batch_size, 1), agent_id, dtype=int, device=self.device)
-        self.position = torch.full((self.calc_batch_size, self.n_agents), 0, dtype=int, device=self.device)  # init position is depot
-        self.remaining_time = torch.zeros(self.calc_batch_size, self.n_agents, device=self.device)
+        self.next_agent = torch.full((self.batch_size, 1), agent_id, dtype=int, device=self.device)
+        self.position = torch.full((self.batch_size, self.n_agents), 0, dtype=int, device=self.device)  # init position is depot
+        self.remaining_time = torch.zeros(self.batch_size, self.n_agents, device=self.device)
         self.load = self.max_load.clone()
         self.demand = self.init_demand.clone()
-        self.current_time = torch.zeros(self.calc_batch_size, 1, device=self.device)
-        self.done = torch.full((self.calc_batch_size, 1), False, dtype=bool, device=self.device)
+        self.current_time = torch.zeros(self.batch_size, 1, device=self.device)
+        self.done = torch.full((self.batch_size, 1), False, dtype=bool, device=self.device)
 
         # [B, n_agents] holding True if agent is next acting agent of the batch
-        agent_mask = torch.arange(self.n_agents, device=self.device).expand(self.calc_batch_size, -1).eq(self.next_agent)
+        agent_mask = torch.arange(self.n_agents, device=self.device).expand(self.batch_size, -1).eq(self.next_agent)
         mask = self.make_mask(agent_mask)
 
         static = {
-            "batch_size": self.batch_size,
+            "local_batch_size": self.local_batch_size,
             "n_nodes": self.n_nodes,
             "n_agents": self.n_agents,
             "location": self.location,
@@ -167,7 +166,7 @@ class Env(object):
             dict: dynamic state
             Tensor: [B, n_agents], additional distance in ohe-hot format(set to 0 for non-active vehciles)
         """
-        agent_mask = torch.arange(self.n_agents, device=self.device).expand(self.calc_batch_size, -1).eq(self.next_agent)
+        agent_mask = torch.arange(self.n_agents, device=self.device).expand(self.batch_size, -1).eq(self.next_agent)
         
         # CALC ADDITIONAL DISTANCE TO THE NEXT DESTINATION
         coord1 = torch.gather(self.location, 1,
@@ -176,7 +175,7 @@ class Env(object):
                               action.view(-1, 1, 1).expand(-1, -1, self.location.size(2)))
         additional_distance = (coord2 - coord1).pow(2).sum(2).sqrt()  # [B, 1]
         # [B, n_agents], additional distance in ohe-hot format
-        additional_distance_oh = torch.zeros(self.calc_batch_size, self.n_agents, device=self.device)
+        additional_distance_oh = torch.zeros(self.batch_size, self.n_agents, device=self.device)
         additional_distance_oh[agent_mask] = additional_distance.squeeze()
 
         # UPDATE REMAINING TIME AND POSITION OF ACTICE VEHCILE
@@ -184,24 +183,24 @@ class Env(object):
         additional_time = additional_distance / agent_speed
         additional_time[additional_distance == 0] = float("inf")  # OOS vehcile is represented by setting remaining time as infinity
         self.remaining_time[agent_mask] = additional_time.squeeze(1)  # [B, n_agents]
-        self.position[agent_mask] = action.squeeze(1)  # [B, n_agents] holding fiexed future position
-        # [B, 1], if all vehcile is in OOS, the episode is done(terminated)
+        self.position[agent_mask] = action.squeeze(1)  # [B, n_agents], destination
+        # [B, 1], if all vehcile is OOS, the episode is done(terminated)
         self.done = self.remaining_time.isinf().all(dim=1, keepdim=True)
 
         # UPDATE DEMAND AND LOAD
         # [B, n_agents] holding True if active agent of episode is at a depot
         at_depot = action.eq(0).expand_as(agent_mask)
         # [B, n_nodes] holding True if the node is being visited
-        at_node = torch.arange(self.n_nodes, device=self.device).expand(self.calc_batch_size, -1).eq(action)
+        at_node = torch.arange(self.n_nodes, device=self.device).expand(self.batch_size, -1).eq(action)
         delta = torch.min(torch.stack([self.demand[at_node], self.load[agent_mask]], dim=1), dim=1).values.squeeze()
         self.demand[at_node] -= delta  # satisfy demand
         self.load[agent_mask] -= delta  # use load
-        self.load[agent_mask * at_depot] = self.max_load[agent_mask * at_depot].clone()  # refill ad depot
+        self.load[agent_mask * at_depot] = self.max_load[agent_mask * at_depot].clone()  # refill at depot
 
-        # TIME STEP AND DEXIDE NEXT VEHICLE
+        # TIME STEP AND DECIDE NEXT VEHICLE CHRONOLOGICALLY
         self.next_agent = self.remaining_time.argmin(1).unsqueeze(1)  # [B, 1] holding index of next acting agent
         # [B, n_agents] holding True if agent is next acting agent of the batch
-        agent_mask = torch.arange(self.n_agents, device=self.device).expand(self.calc_batch_size, -1).eq(self.next_agent)
+        agent_mask = torch.arange(self.n_agents, device=self.device).expand(self.batch_size, -1).eq(self.next_agent)
         # [B, 1] holding the shortest remaining time
         time_delta = self.remaining_time[agent_mask].unsqueeze(1)
         time_delta[time_delta == float("inf")] = 0  # fix time for terminated episode
@@ -211,7 +210,7 @@ class Env(object):
         # UPDATE MASK
         mask = self.make_mask(agent_mask)
 
-        # remaining time for OOS vehicle is masked by -1
+        # remaining time for OOS vehicle is masked with -1
         remaining_time_obs = self.remaining_time.clone()
         remaining_time_obs[remaining_time_obs == float("inf")] = -1
 
@@ -238,7 +237,7 @@ class Env(object):
         Returns:
             Tensor: [B, n_nodes], 0 if unable to visit
         """
-        mask = torch.full((self.calc_batch_size, self.n_nodes), 1, device=self.device)
+        mask = torch.full((self.batch_size, self.n_nodes), 1, device=self.device)
 
         # 1. if the load of active vehcile is 0, mask all customers
         # empty [B, n_nodes]

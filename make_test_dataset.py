@@ -2,13 +2,13 @@ import os
 import torch
 import numpy as np
 """
-To generate the dame test data as used in Li's paper.
-https://github.com/Demon0312/HCVRP_DRL
+Generate the same test data used in https://github.com/Demon0312/HCVRP_DRL
 """
 SEED = 24610  # the last seed used for generating HCVRP data
 SAMPLE_NUM = 1280
 MAX_DEMAND = 9
 N_CUSTS_LIST = [20, 40, 60, 80, 100, 120, 140, 160]
+
 
 def make_dataset(n_custs):
     np.random.seed(SEED)
@@ -40,6 +40,7 @@ def make_dataset(n_custs):
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(save_data, save_path)
+
 
 if __name__ == "__main__":
     for n_cust in N_CUSTS_LIST:

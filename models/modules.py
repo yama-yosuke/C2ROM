@@ -12,9 +12,9 @@ class Embedder(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: [B, dim, N]
+            x: [b, dim, N]
         Returns:
-            embedding: [B, dim_embed, N]
+            embedding: [b, dim_embed, N]
         """
         return self.embed(x)
 
@@ -23,24 +23,24 @@ def simpleMHA(q, k, v, num_heads=8):
     """
     MHA without embedding
     Args:
-        q: [B, dim_embed, L]
-        k, v : [B, dim_embed, S]
+        q: [b, dim_embed, L]
+        k, v : [b, dim_embed, S]
     Returns:
-        MHA(q, k, v): [B, dim_embed, L]
+        MHA(q, k, v): [b, dim_embed, L]
     """
     batch, dim_embed, _ = q.shape
     dim_part = int(dim_embed / num_heads)
-    q_ = q.view(batch, num_heads, dim_part, -1).permute(1, 0, 3, 2)  # [heads, B, L, dim_part]
-    k_ = k.view(batch, num_heads, dim_part, -1).permute(1, 0, 2, 3)  # [heads, B, dim_part, S]
-    v_ = v.view(batch, num_heads, dim_part, -1).permute(1, 0, 3, 2)  # [heads, B, S, dim_part]
+    q_ = q.view(batch, num_heads, dim_part, -1).permute(1, 0, 3, 2)  # [heads, b, L, dim_part]
+    k_ = k.view(batch, num_heads, dim_part, -1).permute(1, 0, 2, 3)  # [heads, b, dim_part, S]
+    v_ = v.view(batch, num_heads, dim_part, -1).permute(1, 0, 3, 2)  # [heads, b, S, dim_part]
 
-    # [heads, B, L, dim_part] * [heads, B, dim_part, S] = (heads, B, L, S]
+    # [heads, b, L, dim_part] * [heads, b, dim_part, S] = [heads, b, L, S]
     compatibility = torch.matmul(q_, k_) / math.sqrt(q_.size(-1))
 
-    # [heads, B, L, S] * [heads, B, S, dim_part] = [heads, B, L, dim_part]
+    # [heads, b, L, S] * [heads, B, b, dim_part] = [heads, b, L, dim_part]
     partial_out = torch.matmul(torch.softmax(compatibility, dim=-1), v_)
 
-    # [B, dim_embed, L]
+    # [b, dim_embed, L]
     out = partial_out.permute(1, 0, 3, 2).contiguous().view(batch, dim_embed, -1)
 
     return out
@@ -59,7 +59,7 @@ class MHA(nn.Module):
             dropout: droput ratio
         """
         super(MHA, self).__init__()
-        # batch_frist=True → input=[B, seq, feature]
+        # batch_frist=True → input=[b, seq, feature]
         self.mha = nn.MultiheadAttention(dim_embed, n_heads, batch_first=True, dropout=dropout)
         if norm == "batch":
             self.bn = nn.BatchNorm1d(dim_embed, affine=True, track_running_stats=True)
@@ -71,12 +71,12 @@ class MHA(nn.Module):
     def forward(self, q, k, v, attn_mask=None, key_padding_mask=None):
         """
         Args:
-            q: [B, dim_embed, L]
-            k, v : [B, dim_embed, S]
+            q: [b, dim_embed, L]
+            k, v : [b, dim_embed, S]
         Returns:
-            BN(q + Attention(q, k, v)): [B, dim_embed, L]
+            BN(q + Attention(q, k, v)): [b, dim_embed, L]
         """
-        # atten_output: [B, L, dim_embed], attn_output_weight: [B, L, S]
+        # atten_output: [b, L, dim_embed], attn_output_weight: [b, L, S]
         y, _ = self.mha(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), attn_mask=attn_mask, key_padding_mask=key_padding_mask)
         if self.bn is None:
             return q + y.transpose(1, 2)
@@ -105,9 +105,9 @@ class FF(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: [B, dim_embed, N]
+            x: [b, dim_embed, N]
         Returns:
-            BN(x + FF(x)): [B, dim_embed, N]
+            BN(x + FF(x)): [b, dim_embed, N]
         """
         y = self.affine2(self.relu(self.affine1(x)))
         if self.bn is None:
@@ -138,9 +138,9 @@ class SelfAttentionLayer(nn.Module):
     def forward(self, q):
         """
         Args:
-            q: [B, dim_embed, L]
+            q: [b, dim_embed, L]
         Returns:
-            h_mha: [B, dim_embed, L]
+            h_mha: [b, dim_embed, L]
         """
         h_mha = self.mha(q, q, q)
         h_ff = self.ff(h_mha)

@@ -11,15 +11,15 @@ def get_options():
     parser.add_argument("--n_custs", type=int, default=40, help="size of customers")
     parser.add_argument("--n_agents", type=int, default=3, help="size of fleet")
     parser.add_argument("--target", type=str, default="MM", help="Min-Max(MM) or Min-Sum(MS)")
-    parser.add_argument("--speed_type", type=str, default="hom", choices=["hom", "het"], helo="hom: homogeneous speed / het: heterogeneous speed")
-    parser.add_argument("--max_demand", type=int, default=9)
+    parser.add_argument("--speed_type", type=str, default="hom", choices=["hom", "het"], help="hom: homogeneous speed / het: heterogeneous speed")
+    parser.add_argument("--max_demand", type=int, default=9, help="max demand of customers")
 
     # Actor parameters
     parser.add_argument("--n_heads", type=int, default=8, help="number of heads in MHA")
     parser.add_argument("--dim_embed", type=int, default=128, help="embedding dimension")
 
     # Baseline parameters
-    parser.add_argument("--mv_beta", type=float, default=0.8, help="weight to calculate moving average(only used in initial epoch")
+    parser.add_argument("--mv_beta", type=float, default=0.8, help="weight to calculate moving average of actor reward(used as beseline at initial epoch)")
     parser.add_argument("--ttest_alpha", type=float, default=0.05, help="significance level in t-test")
     parser.add_argument("--ttest_instance_num", type=int, default=10240, help="instance num used in t-test")
 
@@ -40,7 +40,7 @@ def get_options():
     parser.add_argument("--start_epoch", type=int, default=0, help="epoch to resume from")
 
     # misc
-    parser.add_argument("--log_interval", type=int, default=-1, help="interval for logging (in batch num), default=five times per epoch")  # step(batch)
+    parser.add_argument("--log_interval", type=int, default=-1, help="interval for logging (in batch num), default=five times per epoch")
     parser.add_argument("--cp_interval", type=int, default=1, help="interval to save parameters (in epoch)")  # epoch
     parser.add_argument("--port", type=str, default="49152", help="set different port to run multiple multi-GPU training on the same server")
     parser.add_argument("--no_gpu", action="store_true")

@@ -82,7 +82,7 @@ def load_checkpoint(rank, device, args):
 
 
 def set_actor(rank, device, parallel, args, checkpoint):
-    actor = PolicyNetwork(dim_embed=args.dim_embed, n_heads=args.n_head, tanh_clipping=args.tanh_clipping, dropout=args.dropout, target=args.target, device=device, n_agents=args.n_agents).to(device)
+    actor = PolicyNetwork(dim_embed=args.dim_embed, n_heads=args.n_heads, tanh_clipping=args.tanh_clipping, dropout=args.dropout, target=args.target, device=device, n_agents=args.n_agents).to(device)
     if checkpoint:
         print('Loading actor checkpoint...\n')
         actor.load_state_dict(checkpoint["actor"])
@@ -161,7 +161,7 @@ def validate(args, val_env, actor, n_agents, speed, max_load):
     val_reward_list = []
     val_env.reindex()  # val_dataset is used repeatedly
     while(val_env.next()):
-        _, val_rewards,  _ = execute_routing(args, val_env, actor, n_agents, speed, max_load, test=True)
+        _, val_rewards, _ = execute_routing(args, val_env, actor, n_agents, speed, max_load, test=True)
         val_reward_list.append(val_rewards.mean())
     val_reward_mean = torch.stack(val_reward_list, 0).mean()
     return val_reward_mean
@@ -241,25 +241,25 @@ def train_dist(rank, args, parallel, logger, cp_dir):
     # start training
     for epoch in range(args.start_epoch + 1, args.end_epoch + 1):
         # calc offset
-        step = (epoch - 1) * args.train_batch_num
+        trained_batch_num = (epoch - 1) * args.train_batch_num
         # generate train data on the fly
         train_env.make_maps(args.n_custs, args.max_demand)
 
         if rank == 0:
             pbar = tqdm(total=args.train_batch_num)
         while(train_env.next()):
-            step += 1
+            trained_batch_num += 1
             # execute actor
             sum_logprobs, train_rewards, _ = execute_routing(args, train_env, actor, args.n_agents, args.speed, args.load, test=False)
             train_reward_mean = train_rewards.mean()
-            
+
             # execute baseline
             if epoch == 1:
-                # at initial epoch, moving average of training reward is used instead of rollout baseline 
+                # at initial epoch, moving average of training reward is used instead of rollout baseline
                 bl_rewards = calc_ave(args, train_rewards, bl_rewards)
             else:
                 _, bl_rewards, _ = execute_routing(args, train_env, baseline, args.n_agents, args.speed, args.load, test=True)
-            
+
             # update actor parameter
             advantage = (train_rewards - bl_rewards).detach()  # [B]
             actor_loss = (sum_logprobs * advantage).mean()  # [1]
@@ -269,7 +269,7 @@ def train_dist(rank, args, parallel, logger, cp_dir):
             actor_optimizer.step()
 
             # log
-            if step % args.log_interval == 0:
+            if trained_batch_num % args.log_interval == 0:
                 # execute validation on each device
                 val_reward_mean = validate(args, val_env, actor, args.n_agents, args.speed, args.load)
                 if parallel:
@@ -279,11 +279,11 @@ def train_dist(rank, args, parallel, logger, cp_dir):
                     dist.reduce(val_reward_mean, dst=0, op=dist.ReduceOp.SUM)
                 if rank == 0:
                     # output log in rank0
-                    num_trained_instance = step * args.train_batch_size
+                    trained_instance_num = trained_batch_num * args.train_batch_size
                     train_reward_mean = (train_reward_mean / args.world_size).cpu().item()
                     actor_loss = (actor_loss / args.world_size).cpu().item()
                     val_reward_mean = (val_reward_mean / args.world_size).cpu().item()
-                    logger.add_vals(epoch, step, lr_scheduler.get_last_lr()[0], num_trained_instance, train_reward_mean, actor_loss, val_reward_mean)
+                    logger.add_vals(epoch, trained_batch_num, lr_scheduler.get_last_lr()[0], trained_instance_num, train_reward_mean, actor_loss, val_reward_mean)
                     logger.output()
                 if parallel:
                     dist.barrier()
@@ -319,8 +319,6 @@ def train_dist(rank, args, parallel, logger, cp_dir):
         if parallel:
             dist.barrier()
 
-    if rank == 0:
-        logger.close()
     if parallel:
         cleanup_mp()
 
@@ -337,7 +335,7 @@ def main(args):
     pp.pprint(vars(args))
     with open(os.path.join(cp_dir, "args.json"), 'w') as f:
         json.dump(vars(args), f, indent=True)
-    
+
     if args.world_size > 1:
         print(f"\n===== Spawn {args.world_size} processes =====")
         mp.spawn(train_dist, args=(args, True, logger, cp_dir), nprocs=args.world_size, join=True)
@@ -349,4 +347,3 @@ def main(args):
 if __name__ == "__main__":
     args = get_options()
     main(args)
-
