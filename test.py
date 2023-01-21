@@ -25,7 +25,7 @@ def get_options():
     # dataset parameters
     parser.add_argument("--instance_num", type=int, default=1280)
     parser.add_argument("--batch_size", type=int, default=1280)
-    parser.add_argument("--seed", type=str, default="=Li")
+    parser.add_argument("--seed", type=str, default="=TEST")
     parser.add_argument("--max_demand", type=int, default=9)
 
     args = parser.parse_args()  # dict

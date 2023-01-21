@@ -12,7 +12,7 @@ N_CUSTS_LIST = [20, 40, 60, 80, 100, 120, 140, 160]
 
 def make_dataset(n_custs):
     np.random.seed(SEED)
-    save_path = os.path.join("dataset", "test", 'C{}-MD{}-S{}-seed{}.pt'.format(n_custs, MAX_DEMAND, SAMPLE_NUM, "=Li"))
+    save_path = os.path.join("dataset", "test", 'C{}-MD{}-S{}-seed{}.pt'.format(n_custs, MAX_DEMAND, SAMPLE_NUM, "=TEST"))
 
     settings = {
         "sample_num": SAMPLE_NUM,
