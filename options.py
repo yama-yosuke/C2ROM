@@ -6,20 +6,13 @@ from const import MAX_LOAD, SPEED
 
 
 def get_options():
-    parser = argparse.ArgumentParser(description="C2ROM")
+    parser = argparse.ArgumentParser(description="Pytorch implementation of C2ROM")
 
     # Environment parameters
     parser.add_argument("--seed", type=int, default=123, help="random seed")
     parser.add_argument("--n_custs", type=int, default=40, help="size of customers")
     parser.add_argument("--n_agents", type=int, default=3, help="size of fleet")
     parser.add_argument("--target", type=str, default="MM", help="Min-Max(MM) or Min-Sum(MS)")
-    parser.add_argument(
-        "--speed_type",
-        type=str,
-        default="hom",
-        choices=["hom", "het"],
-        help="hom: homogeneous speed / het: heterogeneous speed",
-    )
     parser.add_argument("--max_demand", type=int, default=9, help="max demand of customers")
 
     # Actor parameters
@@ -31,7 +24,7 @@ def get_options():
         "--mv_beta",
         type=float,
         default=0.8,
-        help="weight to calculate moving average of actor reward(used as beseline at initial epoch)",
+        help="wight for moving average of actor reward(used as beseline at initial epoch)",
     )
     parser.add_argument("--ttest_alpha", type=float, default=0.05, help="significance level in t-test")
     parser.add_argument("--ttest_instance_num", type=int, default=10240, help="instance num used in t-test")
@@ -65,7 +58,7 @@ def get_options():
         "--port",
         type=str,
         default="49152",
-        help="set different port to run multiple multi-GPU training on the same server",
+        help="set different port to run multiple multi-GPU trainings on the same server",
     )
     parser.add_argument("--no_gpu", action="store_true")
 
@@ -85,10 +78,8 @@ def get_options():
         args.log_interval = int(args.train_batch_num / 5)
 
     args.title = "V{}-C{}-{}".format(args.n_agents, args.n_custs, args.target)
-    if args.speed_type == "het":
-        args.title += "-HS"  # heterogeneous speed
 
-    args.speed = SPEED[args.speed_type][args.n_agents]
+    args.speed = SPEED[args.n_agents]
     args.load = MAX_LOAD[args.n_agents]
 
     return args

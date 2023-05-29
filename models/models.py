@@ -72,7 +72,7 @@ class PolicyNetwork(nn.Module):
             remaining_time: [B, n_agents]
             speed: [B, n_agents]
         Returns:
-            Tensor: min_reah_time, shape=[B, n_agents, n_nodes]
+            Tensor: min_reach_time, shape=[B, n_agents, n_nodes]
         """
         # [B, n_agents, 1, 2] destination coordinates of agents
         agent_loc = torch.gather(location, 1, position.unsqueeze(2).expand(-1, -1, 2)).unsqueeze(2)

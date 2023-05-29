@@ -20,17 +20,16 @@ class Env(object):
         self.world_size = world_size
         self.instance_num = instance_num
         self.rep = rep  # instance repetition for sampling
-        self.global_batch_size = global_batch_size  # globalB, batch size processed by the all device
+        self.global_batch_size = global_batch_size  # globalB, total batch size processed by the all GPUs
         assert instance_num % global_batch_size == 0, "instance_num cannnot be divided by global_batch_size"
-        self.batch_num = instance_num // global_batch_size  # number of batches per iterarion(same for all devices)
+        self.batch_num = instance_num // global_batch_size  # number of batches per iterarion(same for all GPUs)
         # calculate batch size on each device(localB)
         self.fraction = global_batch_size % world_size
         self.local_batch_size = (
             ((global_batch_size // world_size) + self.fraction) if rank == 0 else (global_batch_size // world_size)
-        )  # localB
-        self.batch_size = (
-            self.local_batch_size * rep
-        )  # batch size for each device including repetition for sampling, # B
+        )  # localB, batch size processd on this GPU
+        # batch size on this GPU including repetition for sampling, # B
+        self.batch_size = self.local_batch_size * rep
 
     def make_maps(self, n_custs, max_demand):
         self.n_nodes = n_custs + 1
@@ -56,7 +55,7 @@ class Env(object):
         self.max_demand = max_demand
         print(f"Process {self.rank}: Loading environment...\n")
         load_path = os.path.join(
-            program_dir, "dataset", phase, "C{}-MD{}-S{}-seed{}.pt".format(n_custs, max_demand, self.instance_num, seed)
+            program_dir, "dataset", phase, f"C{n_custs}-MD{max_demand}-S{self.instance_num}-seed{seed}.pt"
         )
         load_data = torch.load(load_path)
         if self.rank == 0:

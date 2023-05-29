@@ -121,7 +121,7 @@ def set_baseline(parallel, actor, checkpoint):
 
 def check_update(device, args, actor_rewards, baseline_rewards):
     """
-    conduct TTestOneSidedPairedTTest
+    conduct OneSidedPairedTTest
     Args:
         args:
         baseline_rewards (Tensor):  baseline rewards on rank0, shape=[ttest_samples]
@@ -164,7 +164,7 @@ def save(parallel, save_dir, epoch, actor, actor_optimizer, lr_scheduler, baseli
 def validate(args, val_env, actor, n_agents, speed, max_load):
     """
     Returns:
-        (Tensor): mean of validaton rewards, on each device, shape=[1]
+        Tensor: mean of validaton rewards, on each device, shape=[1]
     """
     val_reward_list = []
     val_env.reindex()  # val_dataset is used repeatedly
@@ -332,7 +332,7 @@ def train_dist(rank, args, parallel, logger, cp_dir):
         lr_scheduler.step()
 
         # check if baseline needs updating
-        # execute routing on test data on each device using both baseline and actor
+        # execute routing on test data on each GPU using both baseline and actor
         baseline_rewards, actor_rewards = test(
             args, ttest_env, baseline, actor, args.n_custs, args.n_agents, args.speed, args.load
         )
@@ -343,7 +343,7 @@ def train_dist(rank, args, parallel, logger, cp_dir):
             # conduct TTest on rank0
             needs_update = check_update(device, args, actor_rewards.cpu().numpy(), baseline_rewards.cpu().numpy())
         else:
-            # used to receice broadcasted flag
+            # used to receive broadcasted flag, temporarily set as True
             needs_update = torch.tensor(True, device=device, dtype=torch.bool)
         if parallel:
             # broadcast TTest results to all devices

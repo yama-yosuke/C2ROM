@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from const import MAX_LOAD, SPEED
 from env import Env
-from models.models import *
+from models.models import PolicyNetwork
 from train import execute_routing
 
 
@@ -45,13 +45,12 @@ def get_options():
     args.dropout = args_load["dropout"]
     args.n_agents = args_load["n_agents"]
     args.target = args_load["target"]
-    args.speed_type = args_load["speed_type"]
     args.sampling = args.n_sampling > 1  # flag for sampling
 
     # overwrite loaded settings
     args.n_custs = args.n_custs or args_load["n_custs"]
 
-    args.speed = SPEED[args.speed_type][args.n_agents]
+    args.speed = SPEED[args.n_agents]
     args.max_load = MAX_LOAD[args.n_agents]
 
     args.title = "V{}-C{}-{}".format(args.n_agents, args.n_custs, args.target)
@@ -129,7 +128,7 @@ def render(location, tours, rewards, save_path):
         ncol=3,
     )
     plt.tight_layout()
-    plt.suptitle(f"test", y=0)
+    plt.suptitle("test", y=0)
     plt.savefig(save_path, facecolor="white", edgecolor="black")
     plt.close()
     return
@@ -172,21 +171,6 @@ def test(args, actor, n_agents, n_custs, speed, max_load, img_path):
     return ave_reward
 
 
-def get_name(args):
-    if args.all:
-        problem = "all"
-    elif args.all_cust:
-        problem = "all-cust"
-    else:
-        problem = args.title
-    if args.sampling:
-        strategy = f"sampling{args.n_sampling}"
-    else:
-        strategy = "greedy"
-    name = f"{problem}-{strategy}-{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
-    return name
-
-
 def main(args):
     # make directories
     epoch = os.path.basename(args.actor_path).split(".")[0]
@@ -206,7 +190,7 @@ def main(args):
         writer = csv.writer(f)
         writer.writerow(["problem", "reward"])
 
-    speed = SPEED[args.speed_type][args.n_agents]
+    speed = SPEED[args.n_agents]
     max_load = MAX_LOAD[args.n_agents]
     img_path = os.path.join(save_dir, f"V{args.n_agents}-C{args.n_custs}.png")
     reward = test(args, actor, args.n_agents, args.n_custs, speed, max_load, img_path)
