@@ -1,5 +1,5 @@
 # C2ROM: A Chronological and Cooperative Route Optimization Method for Heterogeneous Vehicle Routing Problem
-This repository contains a PyTorch implementation of C2ROM, an attention-based model for solving the Heterogeneous Vehicle Routing Problem (HVRP) with a min-max objective. The code is capable of handling arbitrary numbers of customers, vehicles, capacities, and speeds.
+This repository contains a PyTorch implementation of an attention-based model for solving the Heterogeneous Vehicle Routing Problem (HVRP) with a min-max objective. The code is capable of handling arbitrary numbers of customers, vehicles, capacities, and speeds.
 
 ![V12-C100](images/V12-C100.png)
 
