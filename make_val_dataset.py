@@ -1,4 +1,5 @@
 import os
+
 import torch
 
 SEED = 456
@@ -8,7 +9,7 @@ N_CUSTS_LIST = [20, 40, 60, 80, 100, 120, 140, 160]
 
 
 def make_dataset(n_custs):
-    title = 'C{}-MD{}-S{}-seed{}'.format(n_custs, MAX_DEMAND, SAMPLE_NUM, SEED)
+    title = "C{}-MD{}-S{}-seed{}".format(n_custs, MAX_DEMAND, SAMPLE_NUM, SEED)
     save_path = os.path.join("dataset", "val", "{}.pt".format(title))
 
     torch.manual_seed(SEED)

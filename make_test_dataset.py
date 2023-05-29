@@ -1,6 +1,8 @@
 import os
-import torch
+
 import numpy as np
+import torch
+
 """
 Generate the same test data used in https://github.com/Demon0312/HCVRP_DRL
 """
@@ -12,7 +14,9 @@ N_CUSTS_LIST = [20, 40, 60, 80, 100, 120, 140, 160]
 
 def make_dataset(n_custs):
     np.random.seed(SEED)
-    save_path = os.path.join("dataset", "test", 'C{}-MD{}-S{}-seed{}.pt'.format(n_custs, MAX_DEMAND, SAMPLE_NUM, "=TEST"))
+    save_path = os.path.join(
+        "dataset", "test", "C{}-MD{}-S{}-seed{}.pt".format(n_custs, MAX_DEMAND, SAMPLE_NUM, "=TEST")
+    )
 
     settings = {
         "sample_num": SAMPLE_NUM,

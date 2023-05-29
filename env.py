@@ -1,9 +1,9 @@
-import torch
 import os
+
+import torch
 
 
 class Env(object):
-
     def __init__(self, rank, device, world_size, instance_num, global_batch_size, rep=1):
         """
         Args:
@@ -11,8 +11,8 @@ class Env(object):
             device: rank(int) or cpu
             world_size: total num of process
             instance_num: number of instances per iteration
-            global_batch_size: (globalB), batch size(before scattering to each device) 
-            rep: num of sampling(1 if greedy) 
+            global_batch_size: (globalB), batch size(before scattering to each device)
+            rep: num of sampling(1 if greedy)
         """
         # env setting
         self.rank = rank
@@ -25,21 +25,27 @@ class Env(object):
         self.batch_num = instance_num // global_batch_size  # number of batches per iterarion(same for all devices)
         # calculate batch size on each device(localB)
         self.fraction = global_batch_size % world_size
-        self.local_batch_size = ((global_batch_size // world_size) + self.fraction) if rank == 0 else (global_batch_size // world_size)  # localB
-        self.batch_size = self.local_batch_size * rep  # batch size for each device including repetition for sampling, # B
-        
+        self.local_batch_size = (
+            ((global_batch_size // world_size) + self.fraction) if rank == 0 else (global_batch_size // world_size)
+        )  # localB
+        self.batch_size = (
+            self.local_batch_size * rep
+        )  # batch size for each device including repetition for sampling, # B
 
     def make_maps(self, n_custs, max_demand):
         self.n_nodes = n_custs + 1
         self.max_demand = max_demand
-        init_demand = (torch.FloatTensor(self.batch_num, self.local_batch_size, self.n_nodes).uniform_(0, self.max_demand).int() + 1).float()
+        init_demand = (
+            torch.FloatTensor(self.batch_num, self.local_batch_size, self.n_nodes).uniform_(0, self.max_demand).int()
+            + 1
+        ).float()
         init_demand[:, :, 0] = 0  # demand of depot is 0
         # on CPU
         self.dataset = {
             # [batch_num, localB, n_nodes, 2]
             "location": torch.FloatTensor(self.batch_num, self.local_batch_size, self.n_nodes, 2).uniform_(0, 1),
             # [batch_num, localB, n_nodes]
-            "init_demand": init_demand
+            "init_demand": init_demand,
         }
 
         self.reindex()
@@ -49,7 +55,9 @@ class Env(object):
         self.n_nodes = n_custs + 1
         self.max_demand = max_demand
         print(f"Process {self.rank}: Loading environment...\n")
-        load_path = os.path.join(program_dir, "dataset", phase, 'C{}-MD{}-S{}-seed{}.pt'.format(n_custs, max_demand, self.instance_num, seed))
+        load_path = os.path.join(
+            program_dir, "dataset", phase, "C{}-MD{}-S{}-seed{}.pt".format(n_custs, max_demand, self.instance_num, seed)
+        )
         load_data = torch.load(load_path)
         if self.rank == 0:
             idx_from = 0
@@ -62,7 +70,7 @@ class Env(object):
             # [instance_num, n_nodes, 2] -> [batch_num, globalB, n_nodes, 2] -> [batch_num, localB, n_nodes, 2]
             "location": load_data["location"].reshape(self.batch_num, -1, self.n_nodes, 2)[:, idx_from:idx_to],
             # [instance_num, n_nodes] -> [batch_num, globalB, n_nodes] -> [batch_num, localB, n_nodes]
-            "init_demand": load_data["init_demand"].reshape(self.batch_num, -1, self.n_nodes)[:, idx_from:idx_to]
+            "init_demand": load_data["init_demand"].reshape(self.batch_num, -1, self.n_nodes)[:, idx_from:idx_to],
         }
 
         self.reindex()
@@ -78,8 +86,12 @@ class Env(object):
         """
         if self.index == self.batch_num:
             return False
-        self.location = self.dataset["location"][self.index].to(self.device).repeat(self.rep, 1, 1)  # on CUDA, [B, n_nodes, 2]
-        self.init_demand_ori = self.dataset["init_demand"][self.index].clone().repeat(self.rep, 1)  # on CPU, [B, n_nodes]
+        self.location = (
+            self.dataset["location"][self.index].to(self.device).repeat(self.rep, 1, 1)
+        )  # on CUDA, [B, n_nodes, 2]
+        self.init_demand_ori = (
+            self.dataset["init_demand"][self.index].clone().repeat(self.rep, 1)
+        )  # on CPU, [B, n_nodes]
         self.index += 1
         return True
 
@@ -108,7 +120,7 @@ class Env(object):
                 dynamic["demand] (Tensor): current demand, shape=[B, n_nodes]
                 dynamic["current_time"] (Tensor): current time(init=0), shape=[B, 1]
                 dynamic["done"] (Tensor): done(init=False), shape=[B, 1]
-            
+
             Tensor: mask for infeasible action, shape=[B, n_nodes]
         """
         # agent settings
@@ -123,7 +135,9 @@ class Env(object):
 
         # dynamic
         self.next_agent = torch.full((self.batch_size, 1), agent_id, dtype=int, device=self.device)
-        self.position = torch.full((self.batch_size, self.n_agents), 0, dtype=int, device=self.device)  # init position is depot
+        self.position = torch.full(
+            (self.batch_size, self.n_agents), 0, dtype=int, device=self.device
+        )  # init position is depot
         self.remaining_time = torch.zeros(self.batch_size, self.n_agents, device=self.device)
         self.load = self.max_load.clone()
         self.demand = self.init_demand.clone()
@@ -167,12 +181,12 @@ class Env(object):
             Tensor: [B, n_agents], additional distance in ohe-hot format(set to 0 for non-active vehciles)
         """
         agent_mask = torch.arange(self.n_agents, device=self.device).expand(self.batch_size, -1).eq(self.next_agent)
-        
+
         # CALC ADDITIONAL DISTANCE TO THE NEXT DESTINATION
-        coord1 = torch.gather(self.location, 1,
-                              self.position[agent_mask].view(-1, 1, 1).expand(-1, -1, self.location.size(2)))
-        coord2 = torch.gather(self.location, 1,
-                              action.view(-1, 1, 1).expand(-1, -1, self.location.size(2)))
+        coord1 = torch.gather(
+            self.location, 1, self.position[agent_mask].view(-1, 1, 1).expand(-1, -1, self.location.size(2))
+        )
+        coord2 = torch.gather(self.location, 1, action.view(-1, 1, 1).expand(-1, -1, self.location.size(2)))
         additional_distance = (coord2 - coord1).pow(2).sum(2).sqrt()  # [B, 1]
         # [B, n_agents], additional distance in ohe-hot format
         additional_distance_oh = torch.zeros(self.batch_size, self.n_agents, device=self.device)
@@ -181,7 +195,9 @@ class Env(object):
         # UPDATE REMAINING TIME AND POSITION OF ACTICE VEHCILE
         agent_speed = torch.gather(self.speed, 1, self.next_agent)  # [B, 1]
         additional_time = additional_distance / agent_speed
-        additional_time[additional_distance == 0] = float("inf")  # OOS vehcile is represented by setting remaining time as infinity
+        additional_time[additional_distance == 0] = float(
+            "inf"
+        )  # OOS vehcile is represented by setting remaining time as infinity
         self.remaining_time[agent_mask] = additional_time.squeeze(1)  # [B, n_agents]
         self.position[agent_mask] = action.squeeze(1)  # [B, n_agents], destination
         # [B, 1], if all vehcile is OOS, the episode is done(terminated)
@@ -246,14 +262,14 @@ class Env(object):
 
         # 2. mask visited customer
         visited_cust = self.demand.eq(0)
-        visited_cust[:, 0] = False  # exculde Depot 
+        visited_cust[:, 0] = False  # exculde Depot
         mask[visited_cust] = 0
 
         # 3. mask unsatisfiable customer(Demand > Load)
         mask[self.demand.gt(self.load[agent_mask].unsqueeze(1).expand_as(self.demand))] = 0
 
         # 4. prevent declaring last in-servive vehcile to be out-of-service before visiting all customers
-        is_last = (torch.count_nonzero(~self.remaining_time.isinf(), 1) == 1)
+        is_last = torch.count_nonzero(~self.remaining_time.isinf(), 1) == 1
         at_depot = self.position[agent_mask].eq(0)
         not_end = self.demand.sum(1).ne(0)
         mask[is_last * at_depot * not_end, 0] = 0

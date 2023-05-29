@@ -1,18 +1,18 @@
-from train import execute_routing
-import os
-import datetime
 import argparse
+import csv
+import datetime
 import json
+import os
 import pprint as pp
+
+import matplotlib.pyplot as plt
+import torch
 from tqdm import tqdm
 
-from models.models import *
-
+from const import MAX_LOAD, SPEED
 from env import Env
-import csv
-import torch
-import matplotlib.pyplot as plt
-from const import SPEED, MAX_LOAD
+from models.models import *
+from train import execute_routing
 
 
 def get_options():
@@ -46,7 +46,7 @@ def get_options():
     args.n_agents = args_load["n_agents"]
     args.target = args_load["target"]
     args.speed_type = args_load["speed_type"]
-    args.sampling = (args.n_sampling > 1)  # flag for sampling
+    args.sampling = args.n_sampling > 1  # flag for sampling
 
     # overwrite loaded settings
     args.n_custs = args.n_custs or args_load["n_custs"]
@@ -54,23 +54,30 @@ def get_options():
     args.speed = SPEED[args.speed_type][args.n_agents]
     args.max_load = MAX_LOAD[args.n_agents]
 
-    args.title = 'V{}-C{}-{}'.format(args.n_agents, args.n_custs, args.target)
+    args.title = "V{}-C{}-{}".format(args.n_agents, args.n_custs, args.target)
 
     return args
 
 
 def load_checkpoint(args):
     checkpoint = {}
-    print('Loading checkpoint...\n')
+    print("Loading checkpoint...\n")
     checkpoint = torch.load(args.actor_path, map_location=args.device)
     return checkpoint
 
 
 def set_actor(args, checkpoint):
-    actor = PolicyNetwork(dim_embed=args.dim_embed, n_heads=args.n_heads,
-                          tanh_clipping=args.tanh_clipping, dropout=args.dropout, target=args.target, device=args.device, n_agents=args.n_agents).to(args.device)
+    actor = PolicyNetwork(
+        dim_embed=args.dim_embed,
+        n_heads=args.n_heads,
+        tanh_clipping=args.tanh_clipping,
+        dropout=args.dropout,
+        target=args.target,
+        device=args.device,
+        n_agents=args.n_agents,
+    ).to(args.device)
     if "actor" in checkpoint:
-        print('Loading actor checkpoint...\n')
+        print("Loading actor checkpoint...\n")
         actor.load_state_dict(checkpoint["actor"])
     return actor
 
@@ -87,28 +94,40 @@ def render(location, tours, rewards, save_path):
     """
     cmap = plt.get_cmap("hsv")
     n_agents = len(tours[0])
-    _, axes = plt.subplots(nrows=3, ncols=3, sharex='col', sharey='row', figsize=(10, 10))
+    _, axes = plt.subplots(nrows=3, ncols=3, sharex="col", sharey="row", figsize=(10, 10))
     axes = [a for ax in axes for a in ax]
     for episode, ax in enumerate(axes):
         # node
-        ax.scatter(location[episode, 0, 0], location[episode, 0, 1],
-                   color="k", marker="*", s=200, zorder=2)  # depot
-        ax.scatter(location[episode, 1:, 0], location[episode,
-                   1:, 1], color="k", marker="o", zorder=2)  # customer
+        ax.scatter(location[episode, 0, 0], location[episode, 0, 1], color="k", marker="*", s=200, zorder=2)  # depot
+        ax.scatter(location[episode, 1:, 0], location[episode, 1:, 1], color="k", marker="o", zorder=2)  # customer
         # tour
         for agent_id, tour in enumerate(tours[episode]):
             tour_index = torch.tensor(tour).unsqueeze(1).expand(-1, 2)  # [n_visits]
             # input=[n_nodes, 2], dim=1, index=[n_visits, 2]
             tour_xy = torch.gather(location[episode], dim=0, index=tour_index)
-            ax.plot(tour_xy[:, 0], tour_xy[:, 1], color=cmap(agent_id / n_agents),
-                    linestyle="-", linewidth=0.8, zorder=1, label=f"agent{agent_id}")
+            ax.plot(
+                tour_xy[:, 0],
+                tour_xy[:, 1],
+                color=cmap(agent_id / n_agents),
+                linestyle="-",
+                linewidth=0.8,
+                zorder=1,
+                label=f"agent{agent_id}",
+            )
         title = "time:{:.3f}".format(rewards[episode].item())
-        ax.set_aspect('equal')
+        ax.set_aspect("equal")
         ax.set_title(title, y=-0.1)
         ax.axis([-0.05, 1.05, -0.05, 1.05])
         ax.set_xticklabels([])
         ax.set_yticklabels([])
-    plt.legend(loc="upper center", bbox_to_anchor=(0.5, -0.1,), ncol=3)
+    plt.legend(
+        loc="upper center",
+        bbox_to_anchor=(
+            0.5,
+            -0.1,
+        ),
+        ncol=3,
+    )
     plt.tight_layout()
     plt.suptitle(f"test", y=0)
     plt.savefig(save_path, facecolor="white", edgecolor="black")
@@ -117,20 +136,30 @@ def render(location, tours, rewards, save_path):
 
 
 def test(args, actor, n_agents, n_custs, speed, max_load, img_path):
-
     # start testing
-    print(f'Test: V{n_agents}-C{n_custs}')
+    print(f"Test: V{n_agents}-C{n_custs}")
     # initialize env
     # test_env
-    test_env = Env(rank=0, device=args.device, world_size=1, instance_num=args.instance_num, global_batch_size=args.batch_size, rep=args.n_sampling)
+    test_env = Env(
+        rank=0,
+        device=args.device,
+        world_size=1,
+        instance_num=args.instance_num,
+        global_batch_size=args.batch_size,
+        rep=args.n_sampling,
+    )
     test_env.load_maps(n_custs, args.max_demand, "test", args.seed)
 
     rewards_list = []
 
     pbar = tqdm(total=test_env.batch_num)
-    while(test_env.next()):
-        _, rewards, routes = execute_routing(args, test_env, actor, n_agents, speed, max_load, test=True, sampling=args.sampling, rep=args.n_sampling)
-        rewards_list.append(rewards.reshape(args.n_sampling, -1).permute(1, 0))  # list of len=instance_num/batch_size, ele=tensor[batch_size, n_sampling]
+    while test_env.next():
+        _, rewards, routes = execute_routing(
+            args, test_env, actor, n_agents, speed, max_load, test=True, sampling=args.sampling, rep=args.n_sampling
+        )
+        rewards_list.append(
+            rewards.reshape(args.n_sampling, -1).permute(1, 0)
+        )  # list of len=instance_num/batch_size, ele=tensor[batch_size, n_sampling]
         pbar.update(1)
     pbar.close()
     rewards_all = torch.vstack(rewards_list)  # [sample_num, n_sampling]
@@ -163,11 +192,11 @@ def main(args):
     epoch = os.path.basename(args.actor_path).split(".")[0]
     model_dir = os.path.dirname(os.path.dirname(args.actor_path))
     strategy = f"sampling{args.n_sampling}" if args.n_sampling > 1 else "greedy"
-    save_dir = os.path.join(model_dir, f'test_e{epoch}', f"{args.title}-{strategy}")
+    save_dir = os.path.join(model_dir, f"test_e{epoch}", f"{args.title}-{strategy}")
     log_path = os.path.join(save_dir, "result.csv")
     os.makedirs(save_dir, exist_ok=True)
     print(save_dir)
-    args.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     pp.pprint(vars(args))
 
     checkpoint = load_checkpoint(args)

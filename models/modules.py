@@ -1,7 +1,7 @@
+import math
+
 import torch
 import torch.nn as nn
-
-import math
 
 
 class Embedder(nn.Module):
@@ -77,7 +77,13 @@ class MHA(nn.Module):
             BN(q + Attention(q, k, v)): [b, dim_embed, L]
         """
         # atten_output: [b, L, dim_embed], attn_output_weight: [b, L, S]
-        y, _ = self.mha(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), attn_mask=attn_mask, key_padding_mask=key_padding_mask)
+        y, _ = self.mha(
+            q.transpose(1, 2),
+            k.transpose(1, 2),
+            v.transpose(1, 2),
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+        )
         if self.bn is None:
             return q + y.transpose(1, 2)
         return self.bn(q + y.transpose(1, 2))
@@ -89,7 +95,7 @@ class FF(nn.Module):
         Args:
             dim_embed:
             norm: Normalization to use(batch, instance or None)
-            hidden_dim 
+            hidden_dim
         """
         super(FF, self).__init__()
         self.affine1 = Embedder(dim_embed, hidden_dim)  # 32 is arbitrary
@@ -170,4 +176,3 @@ class SelfAttention(nn.Module):
         # nn.Sequential accepts only one argument
         q = self.layers(q)
         return q
-

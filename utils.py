@@ -2,19 +2,28 @@ import csv
 import datetime
 
 
-class Logger():
+class Logger:
     def __init__(self, args, start_time, log_path):
         """
         Args:
-            start_time (datetime.datetime): start time of training 
+            start_time (datetime.datetime): start time of training
             log_path (str): path to log_file
         """
         self.start_time = start_time
         self.log_path = log_path
 
         # columns to save in log file
-        self.header = ['epoch', 'trained_batch_num', "lr", 'trained_instance_num', 'time', 'train/actor_reward', 'train/actor_loss', 'val/actor_reward']
-        with open(self.log_path, 'w') as f:
+        self.header = [
+            "epoch",
+            "trained_batch_num",
+            "lr",
+            "trained_instance_num",
+            "time",
+            "train/actor_reward",
+            "train/actor_loss",
+            "val/actor_reward",
+        ]
+        with open(self.log_path, "w") as f:
             writer = csv.DictWriter(f, fieldnames=self.header)
             writer.writeheader()
 
@@ -43,12 +52,16 @@ class Logger():
         self.logs["time"] = self.calc_hms(elapsed_seconds)
 
     def write_console(self):
-        print('\n===== Epoch: {}, Trained batch: {}, Lr: {:.4e}, Time: {} ====='.format(self.logs["epoch"], self.logs["trained_batch_num"], self.logs["lr"], self.logs["time"]))
-        for key in ['train/actor_reward', 'train/actor_loss', 'val/actor_reward']:
+        print(
+            "\n===== Epoch: {}, Trained batch: {}, Lr: {:.4e}, Time: {} =====".format(
+                self.logs["epoch"], self.logs["trained_batch_num"], self.logs["lr"], self.logs["time"]
+            )
+        )
+        for key in ["train/actor_reward", "train/actor_loss", "val/actor_reward"]:
             print(f"{key}:\t{round(self.logs[key], 3)} ")
 
     def write_csv(self):
-        with open(self.log_path, 'a', newline='') as f:
+        with open(self.log_path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=self.header)
             writer.writerow(self.logs)
 
