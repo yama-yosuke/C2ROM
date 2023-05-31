@@ -382,7 +382,7 @@ def main(args):
         print(f"\n===== Spawn {args.world_size} processes =====")
         mp.spawn(train_dist, args=(args, True, logger, cp_dir), nprocs=args.world_size, join=True)
     else:
-        print(f"\n===== Spawn single process =====")
+        print("\n===== Spawn single process =====")
         train_dist(rank=0, args=args, parallel=False, logger=logger, cp_dir=cp_dir)
 
 

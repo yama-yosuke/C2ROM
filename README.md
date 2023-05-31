@@ -35,7 +35,7 @@ For more detailed options:
 ```
 python train.py --help
 ```
-The training log (.csv) and checkpoint file (.pt) will be saved in the following directory: "Results/{problem name}/{execution time}"
+The training log (.csv) and checkpoint file (.pt) will be saved in the following directory: "results/{problem name}/{execution time}"
 
 ### 3. Test
 To test greedy strategy:
@@ -50,4 +50,4 @@ To test generalization ability in terms of customer size(e.g. with 200 customers
 ```
 python test.py path/to/hoge.pt --n_custs 200
 ```
-The test results will be saved in the following directory: "Results/{problem name}/{execution time}/test_e{epoch}"
+The test results will be saved in the following directory: "results/{problem name}/{execution time}/test_e{epoch}"
