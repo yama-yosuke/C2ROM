@@ -40,14 +40,14 @@ The training log (.csv) and checkpoint file (.pt) will be saved in the following
 ### 3. Test
 To test greedy strategy:
 ```
-python test.py path/to/hoge.pt
+python test.py <path_to_checkpoint.pt>
 ```
 To test sampling strategy(e.g. with 1280 samples):
 ```
-python test.py path/to/hoge.pt --n_sampling 1280
+python test.py <path_to_checkpoint.pt> --n_sampling 1280
 ```
 To test generalization ability in terms of customer size(e.g. with 200 customers):
 ```
-python test.py path/to/hoge.pt --n_custs 200
+python test.py <path_to_checkpoint.pt> --n_custs 200
 ```
 The test results will be saved in the following directory: "results/{problem name}/{execution time}/test_e{epoch}"

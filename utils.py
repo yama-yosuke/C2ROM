@@ -45,7 +45,7 @@ class Logger:
         """
         m, s = divmod(sec, 60)
         h, m = divmod(m, 60)
-        return "{:.0f}:{:.0f}:{:.0f}".format(h, m, s)
+        return "{:02}:{:02}:{:02}".format(h, m, s)
 
     def record_time(self):
         elapsed_seconds = (datetime.datetime.now() - self.start_time).total_seconds()
