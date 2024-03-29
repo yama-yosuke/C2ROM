@@ -4,7 +4,7 @@ This repository contains a PyTorch implementation of an attention-based model fo
 ![V12-C100](images/V12-C100.png)
 
 ## Paper
-For more detailed information, please refer to our paper titled "A Chronological and Cooperative Route Optimization Method for Heterogeneous Vehicle Routing Problem," which has been accepted at ICAI2023 - The 25th International Conference on Artificial Intelligence.
+For more detailed information, please refer to our paper titled "[A Chronological and Cooperative Route Optimization Method for Heterogeneous Vehicle Routing Problem](https://american-cse.org/csce2023-ieee/pdfs/CSCE2023-5LlpKs7cpb4k2UysbLCuOx/275900a068/275900a068.pdf)", which has been accepted at ICAI2023 - The 25th International Conference on Artificial Intelligence.
 
 ## Dependencies
 - Python>=3.8
